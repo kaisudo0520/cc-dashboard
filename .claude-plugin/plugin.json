@@ -1,0 +1,7 @@
+{
+  "name": "cc-dashboard",
+  "version": "0.1.0",
+  "author": { "name": "Kai Su" },
+  "description": "Mission-control dashboard in a dock pane: main session, advisor, subagents, context and session log",
+  "types": "./types/index.d.ts"
+}
