@@ -9,8 +9,8 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 | 面板 | 顯示 | 來源 |
 | :- | :- | :- |
 | **等你回應**（標頭下一行紅字） | 只在「另一個仍在執行的 Claude Code session 正在等你」時出現：`! waiting on you: <session 名稱> <permission／question> <等待時間，如 3m ago>`，多個時加 ` · +<n> more`（等最久的在前）。沒人在等就整行不存在 | 見下方「等你回應」 |
-| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間標 `~` 與 `stale`，Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊；上次主迴圈請求的首字時間與 tok/s（`last req  ttft 0.8s · 42 tok/s`）；最下方單獨一行上下文量表 `ctx` 與壓縮次數（⟲） | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
-| **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了仍保留最後讀數，前面加 `~`、後面標 `stale`，不會推算成新視窗；讀不到數字時顯示原因（例如 `no usage recorded yet`） | 見下方「Codex 額度」 |
+| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊；上次主迴圈請求的首字時間與 tok/s（`last req  ttft 0.8s · 42 tok/s`）；最下方單獨一行上下文量表 `ctx` 與壓縮次數（⟲） | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
+| **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`） | 見下方「Codex 額度」 |
 | **分支** | `branch · <分支名>`、`↔ <upstream> ↑ahead ↓behind`（沒有 upstream 顯示 `no upstream`）；**`unreviewed N files · changed M files`**。全部審過顯示 `✓ unreviewed 0`，無法判斷時顯示 `unreviewed ?`（絕不顯示成 0）。有未審檔案時 `u` 展開清單（最多 8 行，其餘以 `… N more` 計） | 見下方「分支」 |
 | **顧問** | 諮詢時間軸、是否正在諮詢、上次耗時；推測的時機（`before a plan`／`error repeats`／`before done`，標 `(inferred)`）；子代理顧問建議的第一行 | 符合樣式的 agent 類型，或 assistant 列中的 server tool |
 | **權限** | 每次權限檢查一格：綠＝規則允許、藍＝分類器或你允許後執行、黃＝待決、紅 ✗＝拒絕，子代理內的較暗。總計，與依工具類別（`f` file／`s` shell／`o` other）展開最近 5 筆（憑證遮蔽） | `tool.check`，由其後的 `tool.call` 結算 |
@@ -46,7 +46,7 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 只讀、只顯示。需要 `USERPROFILE` 與 `SystemRoot`（Windows）；任一個沒有就不讀，Codex 面板不出現。
 
 - 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 的 `model_reasoning_effort`。
-- 視窗：`~/.codex/sessions/YYYY/MM/DD` 下最新的 rollout（最多試 4 個），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
+- 視窗：`~/.codex/sessions/YYYY/MM/DD` 下最新的 rollout（最多讀 4 個，取事件時間 `timestamp` 最晚的讀數，而不是最晚開始的 rollout；沒有可解析時間的讀數視為最舊），每個 rollout 各跑一次指令，用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
 - 新讀數缺某個視窗時保留舊值。每 120 秒一次。
 
 ## Fable 週額度

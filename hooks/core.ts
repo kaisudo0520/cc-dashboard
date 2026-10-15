@@ -565,18 +565,18 @@ export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.s
 // ---------------------------------------------------------------- Codex usage
 
 /**
- * A Codex usage window as the pane draws it: percent used, whether the reading is past its reset
- * (kept as it was and marked, never guessed as a fresh window), and the time left to the reset.
- * Null when the window is unknown.
+ * A usage window as the pane draws it: percent used, whether the reading is past its reset, and the
+ * time left to the reset. A window past its reset has restarted (the next request opens a new one),
+ * so it reads 0% used, still marked until a fresh reading arrives. Null when the window is unknown.
  */
 export const windowView = (w: UsageWindow | undefined, now: number) => {
   if (w === undefined || !Number.isFinite(w.usedPercent)) return null
-  const pct = Math.max(0, Math.min(100, Math.round(w.usedPercent)))
   const isStale = w.resetsAtMs !== undefined && w.resetsAtMs <= now
+  const pct = isStale ? 0 : Math.max(0, Math.min(100, Math.round(w.usedPercent)))
   return { pct, isStale, resetIn: isStale ? '' : fmtResetIn(w.resetsAtMs ?? null, now) }
 }
 
-/** `5h 13%`, `~13%` past its reset, `—` unknown: the window in a few cells. */
+/** `5h 13%`, `~0%` past its reset, `—` unknown: the window in a few cells. */
 export const windowShort = (label: string, w: UsageWindow | undefined, now: number) => {
   const v = windowView(w, now)
   return `${label} ${v === null ? '—' : `${v.isStale ? '~' : ''}${v.pct}%`}`
@@ -608,7 +608,7 @@ const METER_DETAIL_W = 9
 /** One usage row as the pane draws it: `pct` null is a window not read yet. */
 export type Meter = { label: string; pct: number | null; isStale: boolean; detail: string }
 
-/** A usage window as a row: the time to its reset, or `stale` once past it, the last reading kept and marked. */
+/** A usage window as a row: the time to its reset, or `stale` once past it, at 0% used. */
 export const windowMeter = (label: string, w: UsageWindow | undefined, now: number): Meter => {
   const v = windowView(w, now)
   if (v === null) return { label, pct: null, isStale: false, detail: '' }

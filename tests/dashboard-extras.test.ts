@@ -189,20 +189,20 @@ const refresh = ($: Engine) =>
 
 // ---------------------------------------------------------------- pure
 
-test('a Codex window shows percent used, kept and marked past its reset, never guessed', () => {
+test('a usage window shows percent used; past its reset it has restarted at 0%, marked until a fresh reading arrives', () => {
   expect(windowView({ usedPercent: 13.4, resetsAtMs: NOW + 2 * HOUR_MS + 10 * 60_000 }, NOW)).toEqual({ pct: 13, isStale: false, resetIn: '2h10m' })
-  expect(windowView({ usedPercent: 40, resetsAtMs: NOW - 1 }, NOW)).toEqual({ pct: 40, isStale: true, resetIn: '' })
+  expect(windowView({ usedPercent: 40, resetsAtMs: NOW - 1 }, NOW)).toEqual({ pct: 0, isStale: true, resetIn: '' })
   expect(windowView(undefined, NOW)).toBe(null)
   expect([windowShort('5h', { usedPercent: 13 }, NOW), windowShort('weekly', { usedPercent: 40, resetsAtMs: NOW - 1 }, NOW), windowShort('weekly', undefined, NOW)]).toEqual([
     '5h 13%',
-    'weekly ~40%',
+    'weekly ~0%',
     'weekly —',
   ])
 })
 
 test('a usage window as a row: the time to its reset, stale once past it, a dash before any reading', () => {
   expect(windowMeter('5h', { usedPercent: 13.4, resetsAtMs: NOW + 2 * HOUR_MS + 10 * 60_000 }, NOW)).toEqual({ label: '5h', pct: 13, isStale: false, detail: '⏱ 2h10m' })
-  expect(windowMeter('weekly', { usedPercent: 40, resetsAtMs: NOW - 1 }, NOW)).toEqual({ label: 'weekly', pct: 40, isStale: true, detail: 'stale' })
+  expect(windowMeter('weekly', { usedPercent: 40, resetsAtMs: NOW - 1 }, NOW)).toEqual({ label: 'weekly', pct: 0, isStale: true, detail: 'stale' })
   expect(windowMeter('weekly', { usedPercent: 40 }, NOW)).toEqual({ label: 'weekly', pct: 40, isStale: false, detail: '' })
   expect(windowMeter('weekly', undefined, NOW)).toEqual({ label: 'weekly', pct: null, isStale: false, detail: '' })
   expect(limitWindow({ pct: 19, resetsAt: NOW })).toEqual({ usedPercent: 19, resetsAtMs: NOW })
@@ -281,12 +281,12 @@ test('Codex with no rollout yet says why and shows no figures', async ($, on) =>
   await ui.unmount()
 })
 
-test('a Codex window past its reset keeps its last reading, marked stale', async ($, on) => {
+test('a Codex window past its reset shows 0% used, marked stale', async ($, on) => {
   const { clock } = engine(on, { rollout: codexLine(13, inSeconds(60_000), 40, inSeconds(2 * 24 * HOUR_MS)) })
   await refresh($)
   await clock.advance(2 * 60_000)
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: /~13% stale/ })).toBeDefined()
+  expect(await ui.find({ text: /~0% stale/ })).toBeDefined()
   await ui.unmount()
 })
 

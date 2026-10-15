@@ -155,6 +155,41 @@ test('readCodexQuota shows the pinned model, the configured effort and the windo
   ])
 })
 
+// A long-running older session can hold a newer reading than a later-started idle one.
+const reading = (stamp: string, used: string, resetsAt: string): string =>
+  `{"timestamp":"${stamp}","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex",` +
+  `"primary":${window(used, 300, resetsAt)},"secondary":${window('26.0', 10080, '1792513794')},"credits":null}}}`
+
+const RESUMED_TREE = tree({
+  '/h/.codex/sessions': dirOf('2026'),
+  '/h/.codex/sessions/2026': dirOf('10'),
+  '/h/.codex/sessions/2026/10': dirOf('14', '13'),
+  '/h/.codex/sessions/2026/10/14': fileOf('rollout-2026-10-14T03-00-38-b.jsonl'),
+  '/h/.codex/sessions/2026/10/13': fileOf('rollout-2026-10-13T08-59-55-a.jsonl'),
+})
+const IDLE_NEWER = '/h/.codex/sessions/2026/10/14/rollout-2026-10-14T03-00-38-b.jsonl'
+const RESUMED_OLDER = '/h/.codex/sessions/2026/10/13/rollout-2026-10-13T08-59-55-a.jsonl'
+
+test('readCodexQuota keeps the reading with the latest event time, not the one from the newest-started rollout', async () => {
+  const outputs = {
+    [IDLE_NEWER]: reading('2026-10-13T19:07:28.000Z', '62.0', '1791926994'),
+    [RESUMED_OLDER]: reading('2026-10-13T22:56:28.000Z', '8.0', '1791949200'),
+  }
+  const io: CodexIo = { ...codexIo({}, outputs), list: RESUMED_TREE }
+
+  expect((await readCodexQuota('/h', io)).fiveHour?.usedPercent).toBe(8)
+})
+
+test('a reading with no parseable event time loses to any timestamped one, whichever rollout it is in', async () => {
+  const outputs = {
+    [IDLE_NEWER]: reading('not a time', '62.0', '1791926994'),
+    [RESUMED_OLDER]: reading('2026-10-13T22:56:28.000Z', '8.0', '1791949200'),
+  }
+  const io: CodexIo = { ...codexIo({}, outputs), list: RESUMED_TREE }
+
+  expect((await readCodexQuota('/h', io)).fiveHour?.usedPercent).toBe(8)
+})
+
 test('readCodexQuota falls back to the default model and says why when no rollout has a reading', async () => {
   expect(await readCodexQuota('/h', codexIo({}, {}))).toEqual({ model: 'gpt-6-sol', note: 'no usage recorded yet' })
 })

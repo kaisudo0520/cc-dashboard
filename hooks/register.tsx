@@ -290,7 +290,7 @@ async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
   })
 }
 
-// A reading without a window keeps the last figure for it: the pane marks it stale past its reset.
+// A reading without a window keeps the last figure for it: the pane shows it as 0%, marked stale, past its reset.
 async function refreshCodex($: EngineInterface) {
   const reading = await readCodex($)
   await update($, codex, old =>
@@ -1049,7 +1049,7 @@ export const register: Register = (on, options) => {
     // A usage row as the first version drew its quota header: the label, a bar across the line, the
     // percent in a column of its own, then the time to the reset (or the context's tokens). The rows
     // of one panel share a label column and a bar width (see meterLayout), so their bars line up.
-    // Past its reset the last reading stays, marked `~` and `stale`; a window not read yet is a dash.
+    // Past its reset a window reads 0%, marked `~` and `stale`; a window not read yet is a dash.
     const meterRow = (key: string, row: Meter, layout: { labelW: number; barW: number }, color: string, note = '') => {
       const label = padCells(row.label, layout.labelW)
       if (row.pct === null) return <Text key={key} dimColor wrap="truncate">{`${label} —`}</Text>

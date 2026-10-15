@@ -63,8 +63,23 @@ const windowsOf = (line: string): Raw[] =>
     }))
     .filter(window => Number.isFinite(window.usedPercent))
 
+// The event's own time is the line's first key. A line without a parseable one is a reading of
+// unknown age: -Infinity, older than any reading that has a time.
+const EVENT_TIME = /^\{\s*"timestamp"\s*:\s*"([^"]+)"/
+const UNKNOWN_TIME = Number.NEGATIVE_INFINITY
+
+const eventTimeOf = (line: string): number => {
+  const stamp = EVENT_TIME.exec(line)?.[1]
+  const ms = stamp === undefined ? Number.NaN : Date.parse(stamp)
+
+  return Number.isNaN(ms) ? UNKNOWN_TIME : ms
+}
+
+/** A Codex rate-limit reading and the time of the event that carried it. */
+export type CodexReading = { atMs: number; limits: Pick<CodexQuota, 'fiveHour' | 'weekly'> }
+
 /** The newest Codex rate-limit reading in `text` (a rollout's tail), if any. */
-export const parseCodexLimits = (text: string): Pick<CodexQuota, 'fiveHour' | 'weekly'> | undefined => {
+export const parseCodexReading = (text: string): CodexReading | undefined => {
   const lines = text.split('\n')
 
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -78,13 +93,20 @@ export const parseCodexLimits = (text: string): Pick<CodexQuota, 'fiveHour' | 'w
     const week = windows.find(w => w.minutes > FIVE_HOUR_MAX_MINUTES)
 
     return {
-      fiveHour: five === undefined ? undefined : toWindow(five),
-      weekly: week === undefined ? undefined : toWindow(week),
+      atMs: eventTimeOf(line),
+      limits: {
+        fiveHour: five === undefined ? undefined : toWindow(five),
+        weekly: week === undefined ? undefined : toWindow(week),
+      },
     }
   }
 
   return undefined
 }
+
+/** The newest Codex rate-limit windows in `text` (a rollout's tail), if any. */
+export const parseCodexLimits = (text: string): Pick<CodexQuota, 'fiveHour' | 'weekly'> | undefined =>
+  parseCodexReading(text)?.limits
 
 /** The reasoning effort `~/.codex/config.toml` selects. */
 export const parseCodexEffort = (toml: string): string | undefined =>
@@ -130,7 +152,8 @@ export type CodexIo = {
  * Codex's model is the one the choice file pins its calls to (the rules' default
  * without one) and its reasoning effort comes from Codex's config: both are
  * only displayed. Its 5-hour and weekly windows come from the newest
- * token_count event in a rollout, the only place the CLI records them.
+ * token_count event in a rollout, the only place the CLI records them. Of the newest few rollouts
+ * the reading with the latest event time is shown, not the one from the rollout started last.
  */
 export const readCodexQuota = async (home: string, io: CodexIo): Promise<CodexQuota> => {
   const root = `${home}/.codex`
@@ -138,11 +161,17 @@ export const readCodexQuota = async (home: string, io: CodexIo): Promise<CodexQu
   const effort = parseCodexEffort(await io.readText(`${root}/config.toml`))
   const base = { model, ...(effort === undefined ? {} : { effort }) }
 
-  for (const path of await newestRollouts(io.list, `${root}/sessions`, ROLLOUTS_TRIED).catch(() => [])) {
-    const limits = parseCodexLimits(await io.queryRollout(path))
+  // The newest-started rollout may be idle while an older, resumed one is where Codex is working:
+  // every candidate is read (at most ROLLOUTS_TRIED, one query each) and the latest event wins; on a
+  // tie the one listed first, the newer-started, stays.
+  const paths = await newestRollouts(io.list, `${root}/sessions`, ROLLOUTS_TRIED).catch(() => [])
+  const readings = await Promise.all(paths.map(async path => parseCodexReading(await io.queryRollout(path))))
+  const latest = readings.reduce<CodexReading | undefined>(
+    (best, reading) => (reading !== undefined && (best === undefined || reading.atMs > best.atMs) ? reading : best),
+    undefined,
+  )
 
-    if (limits !== undefined) return { ...base, ...limits }
-  }
+  if (latest !== undefined) return { ...base, ...latest.limits }
 
   return { ...base, note: 'no usage recorded yet' }
 }

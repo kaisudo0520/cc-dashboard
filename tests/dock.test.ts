@@ -104,7 +104,7 @@ test("Claude's windows read short by kind: 5h then 7d, marked past their reset, 
     limitOf({ kind: 'seven_day_opus', percentUsed: 60 }),
     limitOf({ kind: 'five_hour', percentUsed: 19, resetsAt: new Date(NOW + 3 * HOUR_MS).toISOString() }),
   ]
-  expect(claudeWindows(limits, NOW)).toBe('5h 19% · 7d ~3%')
+  expect(claudeWindows(limits, NOW)).toBe('5h 19% · 7d ~0%')
   expect(claudeWindows([limitOf({ kind: 'five_hour', percentUsed: 2 })], NOW)).toBe('5h 2%')
   expect(claudeWindows([limitOf({ kind: 'spend_limit', percentUsed: 40 })], NOW)).toBe(null)
   expect(claudeWindows([], NOW)).toBe(null)
