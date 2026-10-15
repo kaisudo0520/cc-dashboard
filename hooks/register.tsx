@@ -1,249 +1,276 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer, ToolCallResult } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { CodexQuota, GitSnap, LiveSession, WaitReason, WaitingRow } from '../types'
-import { HEAD_CHARS, describeCodex, sessionIdFrom } from './lib/codex'
-import { callEnd } from './lib/codex-call'
-import { findCodex } from './lib/codex-state'
+import type { AgentCard, Architect, Bucket, Check, CodexQuota, Gate, GitSnap, Layout, LogLine, Loop, Main, Roster, Turn, Usage, UsageWindow, View } from '../types'
+import {
+  DEFAULT_ARCHITECT,
+  DEFAULT_GATE,
+  DEFAULT_MAIN,
+  DEFAULT_ROSTER,
+  DEFAULT_TURN,
+  DEFAULT_USAGE,
+  DEFAULT_VIEW,
+  EDIT_TOOLS,
+  SCHEMA_VERSION,
+  afterCall,
+  applyStep,
+  bucketOf,
+  cardTitle,
+  titleLines,
+  consultTimeline,
+  describeInput,
+  endConsult,
+  fitLegend,
+  fmtClock,
+  fmtDuration,
+  fmtTimer,
+  fmtUsd,
+  MOMENT_LABEL,
+  statusLabel,
+  whoLabel,
+  windowView,
+  windowShort,
+  GIT_PATH_ROWS,
+  unreviewedLabel,
+  changedLabel,
+  syncLabel,
+  canUnfold,
+  cells,
+  pathLines,
+  pathRows,
+  gateSummary,
+  gauge,
+  isAdvising,
+  isLoopActive,
+  kTokens,
+  lanes,
+  limitLabel,
+  limitOf,
+  fmtResetIn,
+  fmtSpeed,
+  listOf,
+  logRows,
+  momentOf,
+  normalize,
+  normalizeCard,
+  normalizeGate,
+  normalizeLog,
+  noteTool,
+  PALETTES,
+  SVG_COLORS,
+  parseConfig,
+  prettyModel,
+  promptLine,
+  handbackOf,
+  adviceLine,
+  receiptOf,
+  recordCheck,
+  settleCheck,
+  shorten,
+  startConsult,
+  stepSpeed,
+  stepLoop,
+} from './core'
+import type { Config, Panel } from './core'
 import { ROLLOUT_QUERY, readCodexQuota } from './lib/codex-quota'
-import { effortLabel } from './lib/format'
 import { isPersonPrompt, isReviewCall, isReviewPrompt, snapOf } from './lib/git'
 import { GIT_TIMEOUT_MS, readTree } from './lib/git-tree'
 import type { GitRun, Inspect, Tree } from './lib/git-tree'
-import { paneRowsFor } from './lib/layout'
-import { parseNotifications } from './lib/notify'
-import type { Notification } from './lib/notify'
-import {
-  CLAUDE_MS,
-  CODEX_MS,
-  GIT_MS,
-  OTHERS_MS,
-  PUMP_MS,
-  REFRESH_SOURCES,
-  SESSIONS_MS,
-  WAIT_MS,
-  dueSources,
-} from './lib/poll'
-import type { Source } from './lib/poll'
-import { FABLE_POLL_MS, claudeWindows, fableFromUsage, nextFableDelay } from './lib/quota'
+import { plain } from './lib/plain'
 import { readReviewed, recordReviewed } from './lib/review-store'
 import type { ReviewStore } from './lib/review-store'
-import { readLiveSessions } from './lib/sessions'
-import { advisorModelOf, advisorTimes, listedAgents, spawnEvent } from './lib/signals'
-import { powershellExe, tasklistExe } from './lib/system'
-import { apply, initialState, isActive, nextRowExpiry } from './lib/state'
-import type { DashEvent } from './lib/state'
-import { serial } from './lib/serial'
-import { isQuestionTool, markPath, markText, readWaits, sameWaits } from './lib/waiting'
-import { FRAME_MS, dashboardTree } from './views'
-
-// The I/O edge. `$` is followed only into functions declared in this file, so
-// everything that reaches the engine is spelled out here; what the engine
-// reports becomes a DashEvent, the reducer in ./lib/state folds it in, and
-// ./views draws the state. Nothing is faked: every figure comes from an event
-// or a `$` call below.
+import { powershellExe } from './lib/system'
 
 const PANE = 'dashboard'
-/** Every Nth tick of the animation also looks at the agent list. */
-const AGENT_SYNC_EVERY = 4
-const AGENT_RESYNC_MS = 1000
+const TITLE = 'Dashboard'
+const PANE_COLUMNS = 66
 
-const dash = atom({ plugin: 'cc-dashboard', key: 'dash' } as const, initialState)
-// Set once the pane has been opened on its own, so a hot reload does not reopen one the person closed.
-const autoOpened = atom({ plugin: 'cc-dashboard', key: 'autoOpened' } as const, false)
-// The body rows the pane has asked for, once the terminal's height is known.
-const paneRows = atom({ plugin: 'cc-dashboard', key: 'paneRows' } as const, undefined as number | undefined)
-// The 分支 panel's list of unreviewed paths is unfolded: only the person's `u` changes it.
-const unreviewedOpen = atom({ plugin: 'cc-dashboard', key: 'unreviewedOpen' } as const, false)
-// The panels the person folded to their title line (hotkeys 1 and 2): session UI state, kept across /clear.
-const folded = atom({ plugin: 'cc-dashboard', key: 'folded' } as const, { quota: false, git: false })
-// This session's own wait on the person, null when there is none (see "Wait marks").
-const waiting = atom({ plugin: 'cc-dashboard', key: 'waiting' } as const, null as { reason: WaitReason; sinceMs: number } | null)
-// The live Claude Code sessions, from the registry and the process table.
-const sessions = atom({ plugin: 'cc-dashboard', key: 'sessions' } as const, [] as LiveSession[])
+
+// ---------------------------------------------------------------- state
+
+const meta = atom({ plugin: 'cc-dashboard', key: 'meta' } as const, { schemaVersion: SCHEMA_VERSION })
+const main = atom({ plugin: 'cc-dashboard', key: 'main' } as const, DEFAULT_MAIN)
+const usage = atom({ plugin: 'cc-dashboard', key: 'usage' } as const, DEFAULT_USAGE)
+const architect = atom({ plugin: 'cc-dashboard', key: 'architect' } as const, DEFAULT_ARCHITECT)
+const gate = atom({ plugin: 'cc-dashboard', key: 'gate' } as const, DEFAULT_GATE)
+const agents = atom({ plugin: 'cc-dashboard', key: 'agents' } as const, [])
+const loops = atom({ plugin: 'cc-dashboard', key: 'loops' } as const, [])
+const log = atom({ plugin: 'cc-dashboard', key: 'log' } as const, [])
+const turn = atom({ plugin: 'cc-dashboard', key: 'turn' } as const, DEFAULT_TURN)
+const receipt = atom({ plugin: 'cc-dashboard', key: 'receipt' } as const, null)
+const view = atom({ plugin: 'cc-dashboard', key: 'view' } as const, DEFAULT_VIEW)
+const roster = atom({ plugin: 'cc-dashboard', key: 'roster' } as const, DEFAULT_ROSTER)
+const codex = atom({ plugin: 'cc-dashboard', key: 'codex' } as const, null)
+const git = atom({ plugin: 'cc-dashboard', key: 'git' } as const, null)
 
 const swallow = (): void => undefined
 
-// The redraw timer runs only while something is: it starts with work and is
-// cancelled when the last of it ends, so an idle session has no timer at all.
-let timer: Timer | undefined
-let ticks = 0
+type ServerBlock = { type: string; id?: string; name?: string; tool_use_id?: string }
 
-const syncAgents = async ($: EngineInterface): Promise<void> => {
-  const agents = listedAgents(await $.agent.list())
-
-  await dispatch($, { type: 'agents-sync', at: await $.clock.now(), agents })
+// Every read goes through these, so a value saved under an older shape still reads.
+async function getMain($: EngineInterface): Promise<Main> {
+  return normalize(DEFAULT_MAIN, await read($, main))
+}
+async function getUsage($: EngineInterface): Promise<Usage> {
+  return normalize(DEFAULT_USAGE, await read($, usage))
+}
+async function getArchitect($: EngineInterface): Promise<Architect> {
+  const a = normalize(DEFAULT_ARCHITECT, await read($, architect))
+  return { ...a, consults: listOf(a.consults), ids: listOf(a.ids), seen: listOf(a.seen) }
+}
+async function getGate($: EngineInterface): Promise<Gate> {
+  return normalizeGate(await read($, gate))
+}
+async function getCards($: EngineInterface): Promise<AgentCard[]> {
+  return listOf<unknown>(await read($, agents)).map(normalizeCard)
+}
+async function getLoops($: EngineInterface): Promise<Loop[]> {
+  return listOf<Loop>(await read($, loops))
+}
+async function getLog($: EngineInterface): Promise<LogLine[]> {
+  return normalizeLog(await read($, log))
+}
+async function getTurn($: EngineInterface): Promise<Turn> {
+  return normalize(DEFAULT_TURN, await read($, turn))
+}
+async function getView($: EngineInterface): Promise<View> {
+  return normalize(DEFAULT_VIEW, await read($, view))
+}
+async function getRoster($: EngineInterface): Promise<Roster> {
+  const r = normalize(DEFAULT_ROSTER, await read($, roster))
+  return { architectTypes: listOf(r.architectTypes) }
 }
 
-// Only a pane that is showing is worth redrawing. When it is not, the timer
-// stops; the next event, or opening the pane, starts it again.
-const isPaneShown = async ($: EngineInterface): Promise<boolean> =>
-  (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown)
-
-const onTick = async ($: EngineInterface): Promise<void> => {
-  if (!(await isPaneShown($))) {
-    timer?.cancel()
-    timer = undefined
-
-    return
-  }
-  ticks += 1
-  $.ui.invalidate('ui.render')
-  if (ticks % AGENT_SYNC_EVERY === 0) void syncAgents($).catch(swallow)
+/** A stored shape older than this build's: drop what cannot be read, keep the rest. */
+async function migrate($: EngineInterface) {
+  const m = await read($, meta)
+  if ((m?.schemaVersion ?? 0) >= SCHEMA_VERSION) return
+  await update($, log, list => normalizeLog(list))
+  await update($, agents, list => listOf<unknown>(list).map(normalizeCard))
+  await update($, gate, g => normalizeGate(g))
+  await update($, meta, () => ({ schemaVersion: SCHEMA_VERSION }))
 }
 
-const refreshTimer = async ($: EngineInterface): Promise<void> => {
-  const isBusy = isActive(await read($, dash))
-
-  if (isBusy && timer === undefined) {
-    ticks = 0
-    timer = $.clock.every(FRAME_MS, () => void onTick($).catch(swallow))
-  } else if (!isBusy && timer !== undefined) {
-    timer.cancel()
-    timer = undefined
-  }
+async function say($: EngineInterface, who: string, text: string, kind: LogLine['kind'] = 'info', agentId: string | null = null) {
+  const line: LogLine = { at: await $.clock.now(), who, text, kind, agentId }
+  await update($, log, list => [...normalizeLog(list), line].slice(-60))
 }
 
-// A finished row leaves the boxes a minute after it ended, and the frame timer
-// above is stopped by then. So one one-shot redraw waits for the next expiry:
-// never more than one at a time, re-aimed when the next expiry changes, and
-// gone when no row is left to expire.
-let expiryTimer: Timer | undefined
-let expiryAt: number | undefined
-// The aims run one after another, each reading the state as it stands then: an older read
-// that finishes late cannot cancel the timer a newer one set.
-const inExpiryOrder = serial()
-
-const aimExpiry = async ($: EngineInterface): Promise<void> => {
-  const now = await $.clock.now()
-  const next = nextRowExpiry(await read($, dash), now)
-  if (next === expiryAt) return
-
-  expiryTimer?.cancel()
-  expiryAt = next
-  expiryTimer =
-    next === undefined
-      ? undefined
-      : $.clock.after(next - now, () => {
-          expiryAt = undefined
-          expiryTimer = undefined
-          $.ui.invalidate('ui.render')
-          void scheduleExpiry($).catch(swallow)
-        })
+async function refreshStatus($: EngineInterface, cfg: Config) {
+  if (!cfg.statusLine) return $.ui.status(undefined)
+  const [u, a, g, cards] = await Promise.all([getUsage($), getArchitect($), getGate($), getCards($)])
+  const running = cards.filter(c => c.status === 'running').length
+  const s = gateSummary(g)
+  const parts = [
+    u.pct !== null ? `上下文 ${Math.round(u.pct)}%` : null,
+    cards.length > 0 ? `子代理 ${running}/${cards.length}` : null,
+    a.consults.length > 0 || a.ids.length > 0 ? `${cfg.architectLabel.toLowerCase()} ${isAdvising(a) ? '諮詢中' : a.consults.length}` : null,
+    s.deny > 0 ? `拒絕 ${s.deny}` : null,
+  ]
+  // Only fields with something to say; with none, no status entry at all.
+  const shown = parts.filter(Boolean)
+  $.ui.status(shown.length > 0 ? shown.join(' · ') : undefined)
 }
 
-const scheduleExpiry = ($: EngineInterface): Promise<void> => inExpiryOrder(() => aimExpiry($))
-
-async function dispatch($: EngineInterface, event: DashEvent): Promise<void> {
-  await update($, dash, state => apply(state, event))
-  await refreshTimer($)
-  await scheduleExpiry($)
+async function whoIs($: EngineInterface, agentId: string | undefined) {
+  if (!agentId) return 'main'
+  const card = (await getCards($)).find(c => c.id === agentId)
+  return card ? shorten(cardTitle(card), 14) : '子代理'
 }
 
-// The dashboard is a display: an event it cannot record (the clock, the state)
-// never reaches the engine's own event.
-const record = async ($: EngineInterface, build: (at: number) => DashEvent): Promise<void> => {
-  try {
-    await dispatch($, build(await $.clock.now()))
-  } catch {
-    // Dropped on purpose: see above.
-  }
+async function consultStarted($: EngineInterface, cfg: Config, id: string, via: string) {
+  const t = await getTurn($)
+  const moment = momentOf(t)
+  const at = await $.clock.now()
+  await update($, architect, a => startConsult(normalize(DEFAULT_ARCHITECT, a), { id, at, moment, via }))
+  if (moment === 'before done') await update($, turn, x => ({ ...normalize(DEFAULT_TURN, x), isReviewing: true }))
+  await say($, cfg.architectLabel.toLowerCase(), cfg.moments ? `${MOMENT_LABEL[moment]} · ${via}` : `諮詢 · ${via}`, 'consult')
+  await refreshStatus($, cfg)
 }
 
-// The settings are read afresh at each turn: /advisor can change the model mid-session.
-const readAdvisorModel = async ($: EngineInterface): Promise<string | undefined> =>
-  advisorModelOf(await $.settings.read().catch(() => ({})))
-
-// The context fill and the five-hour and weekly windows, from the engine's own figures.
-const refreshUsage = async ($: EngineInterface): Promise<void> => {
-  const { context, rateLimits } = await $.session.usage()
-
-  await dispatch($, { type: 'context', context })
-  await dispatch($, { type: 'claude-quota', ...claudeWindows(rateLimits) })
+async function consultEnded($: EngineInterface, cfg: Config, advice: string | null, id?: string) {
+  const at = await $.clock.now()
+  const first = advice?.split('\n').find(l => l.trim()) ?? null
+  const text = first ? shorten(first.replace(/^[#>*\s-]+/, ''), 160) : null
+  await update($, architect, a => endConsult(normalize(DEFAULT_ARCHITECT, a), at, text, id))
+  await update($, turn, t => ({ ...normalize(DEFAULT_TURN, t), isReviewing: false }))
+  await say($, cfg.architectLabel.toLowerCase(), text ? `建議：${shorten(text, 60)}` : '建議已回傳', 'consult')
+  await refreshStatus($, cfg)
 }
 
-// What a session starts from: its model, how many turns it has had, the advisor
-// setting and the context fill. Each look-up that fails leaves its field blank.
-const initSession = async ($: EngineInterface, turns: number): Promise<void> => {
-  const model = await $.session.model().catch(() => undefined)
-  const advisorModel = await readAdvisorModel($)
-
-  if (model !== undefined) await dispatch($, { type: 'session', model, turns, advisorModel })
-  else await dispatch($, { type: 'advisor-model', model: advisorModel })
-  await refreshUsage($).catch(swallow)
+async function noteAdvice($: EngineInterface, cfg: Config, advice: string) {
+  await update($, architect, x => ({ ...normalize(DEFAULT_ARCHITECT, x), lastAdvice: advice }))
+  await say($, cfg.architectLabel.toLowerCase(), `建議：${shorten(advice, 60)}`, 'consult')
 }
 
-// The pane's width is left to the dock; its height is asked for once the
-// terminal's is known (see sizePane). Each open sets the request anew, so it
-// is repeated on every open.
-const openPane = async ($: EngineInterface, isAsked: boolean, asking?: number) => {
-  const rows = asking ?? (await read($, paneRows))
-  const pane = { id: PANE, title: 'Dashboard', ...(rows === undefined ? {} : { rows }) }
-
-  return $.ui.open(isAsked ? { ...pane, focus: true } : pane)
+async function isArchitectType($: EngineInterface, cfg: Config, type: string) {
+  return cfg.architect.test(type) || (await getRoster($)).architectTypes.includes(type)
 }
 
-const sizePane = async ($: EngineInterface, terminalRows: number): Promise<void> => {
-  if ((await read($, paneRows)) !== undefined) return
-
-  // Kept only once the engine took the request: a refused one is asked again at the next drawing.
-  const rows = paneRowsFor(terminalRows)
-  await openPane($, false, rows)
-  await update($, paneRows, () => rows)
+async function openPane($: EngineInterface) {
+  // columns apply when docked beside the transcript, rows when seated inline above the prompt.
+  return $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: 8 })
 }
 
-// The terminal's height is first told to a drawing (`viewport.rows`), not at
-// start. The first time it is seen the pane asks for its share of it, once;
-// later drawings and opens only repeat that number. Drawing is pure (no state
-// writes, no opening), so the ask is made from a timer of its own.
-let isSizing = false
+async function resetAll($: EngineInterface) {
+  await update($, main, m => ({ ...DEFAULT_MAIN, model: normalize(DEFAULT_MAIN, m).model, mode: normalize(DEFAULT_MAIN, m).mode }))
+  await update($, architect, () => DEFAULT_ARCHITECT)
+  await update($, gate, () => DEFAULT_GATE)
+  await update($, agents, () => [])
+  await update($, loops, () => [])
+  await update($, log, () => [])
+  await update($, turn, () => DEFAULT_TURN)
+  await update($, receipt, () => null)
+  await update($, view, () => DEFAULT_VIEW)
+  // The context gauge waits for the next measurement rather than showing the pre-clear fill.
+  await update($, usage, x => ({ ...normalize(DEFAULT_USAGE, x), pct: null, tokens: null }))
+}
 
-const scheduleSizing = ($: EngineInterface, terminalRows: number | undefined): void => {
-  if (terminalRows === undefined || isSizing) return
-  isSizing = true
-  $.clock.after(
-    0,
-    () =>
-      void sizePane($, terminalRows).catch(() => {
-        isSizing = false
-      }),
+/** The session's cost read fresh, not from the last measurement: the receipt subtracts two of these. */
+async function costNow($: EngineInterface): Promise<number | null> {
+  const u = await $.session.usage().catch(() => null)
+  return u?.cost?.usd ?? null
+}
+
+async function noteMode($: EngineInterface, mode: string | undefined) {
+  if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
+}
+
+// ---------------------------------------------------------------- Codex usage
+// Codex's figures are only displayed (see ./lib/codex-quota): its model from the choice file, its
+// effort from its config, and its 5-hour and weekly windows from the newest rollout, read through
+// Windows PowerShell by full path. The rollout's path rides in the environment, never in the command
+// text. Without USERPROFILE or SystemRoot nothing is read and the panel stays hidden.
+
+async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
+  const home = await $.env.get('USERPROFILE')
+  const root = await $.env.get('SystemRoot')
+  if (home === undefined || root === undefined) return null
+  return readCodexQuota(home, {
+    readText: path => $.fs.read(path).catch(() => ''),
+    list: dir => $.fs.list(dir),
+    queryRollout: path =>
+      $.process
+        .run([powershellExe(root), '-NoProfile', '-NonInteractive', '-Command', ROLLOUT_QUERY], { env: { ROLLOUT: path }, timeoutMs: 20_000 })
+        .then(done => done.stdout, () => ''),
+  })
+}
+
+// A reading without a window keeps the last figure for it: the pane marks it stale past its reset.
+async function refreshCodex($: EngineInterface) {
+  const reading = await readCodex($)
+  await update($, codex, old =>
+    reading === null ? null : { ...reading, fiveHour: reading.fiveHour ?? old?.fiveHour, weekly: reading.weekly ?? old?.weekly },
   )
 }
 
-// Close the pane when it is showing; otherwise open it, which also brings up a
-// pane behind another tab or waiting undrawn for a wider terminal.
-const togglePane = async ($: EngineInterface): Promise<void> => {
-  if (await isPaneShown($)) {
-    await $.ui.close({ id: PANE })
+// ---------------------------------------------------------------- branch (git)
+// The session's repository, read with read-only git (the commands are spelled in ./lib/git-tree).
+// A changed file is unreviewed when the last review did not see its contents as they are now. What
+// a review saw is the one thing this plugin writes: under `git-reviewed:<root>` in its own `$.store`.
 
-    return
-  }
-  await openPane($, true)
-  await refreshTimer($)
-  void pumpPolls($).catch(swallow)
-}
+const gitRun = ($: EngineInterface): GitRun => (argv, init) => $.process.run(argv, { timeoutMs: GIT_TIMEOUT_MS, ...init })
 
-// A turn of the main conversation: the engine's own count wins when it is
-// ahead, and a session met for the first time here is read in first.
-const startTurn = async ($: EngineInterface): Promise<void> => {
-  const turns = await $.session.turns().catch(() => 0)
-
-  if ((await read($, dash)).main.model === undefined) await initSession($, 0)
-  else await dispatch($, { type: 'advisor-model', model: await readAdvisorModel($) })
-  await dispatch($, { type: 'turn-start', at: await $.clock.now(), turns })
-}
-
-// --- Git ----------------------------------------------------------------------
-// The 分支 panel. The session's repository is read with read-only git (the
-// commands are spelled in ./lib/git-tree, which is handed this runner); the
-// panel counts as unreviewed the changed files whose contents the last review
-// did not see. What a review saw is the one thing this plugin writes: under
-// `git-reviewed:<root>` in its own `$.store` (see recordReview).
-
-const gitRun = ($: EngineInterface): GitRun => (argv, init) =>
-  $.process.run(argv, { timeoutMs: GIT_TIMEOUT_MS, ...init })
-
-// The store's calls, handed to ./lib/review-store (which caps what is kept in it).
 const reviewStore = ($: EngineInterface): ReviewStore => ({
   get: key => $.store.get(key),
   set: (key, value) => $.store.set(key, value),
@@ -254,528 +281,1109 @@ const reviewStore = ($: EngineInterface): ReviewStore => ({
 // Whether a path is a link, and where it lands (a junction lands elsewhere without being a link); one that cannot be checked counts as a link.
 const inspect = ($: EngineInterface): Inspect => path =>
   $.fs.stat(path, { resolve: true }).then(
-    stat => ({ isLink: stat.isLink, ...(stat.realPath === undefined ? {} : { realPath: stat.realPath }) }),
+    st => ({ isLink: st.isLink, ...(st.realPath === undefined ? {} : { realPath: st.realPath }) }),
     () => ({ isLink: true }),
   )
 
 const readGitTree = ($: EngineInterface): Promise<Tree | undefined> => readTree(gitRun($), inspect($))
-
-// The repository as the panel shows it; null outside one. A git that cannot be run rejects.
-const lookAtGit = async ($: EngineInterface): Promise<GitSnap | null> => {
-  const tree = await readGitTree($)
-  if (tree === undefined) return null
-
-  return snapOf(tree.status, tree.hashes, await readReviewed(reviewStore($), tree.root))
-}
-
-// A git that cannot be run empties the panel: figures that may be old are not kept.
-const refreshGit = async ($: EngineInterface): Promise<void> => {
-  await dispatch($, { type: 'git', git: await lookAtGit($).catch(() => null) })
-}
-
 const readTreeQuietly = ($: EngineInterface): Promise<Tree | undefined> => readGitTree($).catch(() => undefined)
 
-// The tree read as a review started is what that review saw: once the review is
-// under way (not refused, not failed) those contents count as reviewed. This
-// runs on the review's own event, whether or not the pane is showing.
-const recordReview = async ($: EngineInterface, tree: Tree | undefined): Promise<void> => {
+// Outside a repository, or with a git that cannot run, the panel empties: old figures are not kept.
+async function refreshGit($: EngineInterface) {
+  const tree = await readGitTree($).catch(() => undefined)
+  const snap: GitSnap | null = tree === undefined ? null : snapOf(tree.status, tree.hashes, await readReviewed(reviewStore($), tree.root))
+  await update($, git, () => snap)
+}
+
+// The tree read as a review started is what that review saw: once it is under way (not refused,
+// not failed) those contents count as reviewed. This runs whether or not the pane is showing.
+async function recordReview($: EngineInterface, tree: Tree | undefined) {
   if (tree?.hashes === undefined) return
-
   const kept = await recordReviewed(reviewStore($), tree.root, tree.hashes)
-  await dispatch($, { type: 'git', git: snapOf(tree.status, tree.hashes, kept) })
+  await update($, git, () => snapOf(tree.status, tree.hashes, kept))
 }
 
-// --- Wait marks ---------------------------------------------------------------
-// A session that waits on the person (a permission dialog, a question or a plan
-// to approve) says so in a small mark file named by its pid, in the folder
-// status-sidebar uses, in its format: sessions running either mod see each
-// other. The marks are the only files written here. Writing this session's own
-// is driven by events and happens whether or not the pane shows. Reading the
-// others' (and the registry and process table that say which marks to trust)
-// only serves the banner, so it waits for the pane to show.
+// ---------------------------------------------------------------- polling
+// Codex and git are read on their own schedules, and only while the pane is showing: a pane nobody
+// sees costs no process. One pump looks every 2 seconds and starts whichever is due and not running.
 
-// The pid names this session's mark; the registry gives it. Until it is known
-// nothing waits for it, so a dialog is never held up on it.
-let herePid: number | undefined
-let pidLookup: Promise<void> | undefined
-// Calls whose permission is put to the decider, so a dialog's wait ends with its own call.
-const asked = new Set<string>()
-
-// The live sessions: the registry Claude Code keeps in ~/.claude/sessions, kept
-// to the pids still running as Claude Code (a crash leaves its file behind and
-// pids get reused). A registry or process table that cannot be read leaves no
-// sessions, and so no banner.
-const refreshSessions = async ($: EngineInterface): Promise<void> => {
-  try {
-    const home = await $.env.get('USERPROFILE')
-    if (home === undefined) throw new Error('USERPROFILE is not set')
-    const root = await $.env.get('SystemRoot')
-    if (root === undefined) throw new Error('SystemRoot is not set')
-
-    const rows = await readLiveSessions(home, await $.session.id(), {
-      list: dir => $.fs.list(dir),
-      read: path => $.fs.read(path).catch(() => ''),
-      tasklist: () => $.process.run([tasklistExe(root), '/FO', 'CSV', '/NH'], { timeoutMs: 15000 }),
-    })
-    herePid = rows.find(row => row.isHere)?.pid ?? herePid
-    await update($, sessions, () => rows)
-  } catch (error) {
-    await update($, sessions, () => [])
-    throw error
-  }
-}
-
-const learnPid = ($: EngineInterface): Promise<void> => {
-  pidLookup ??= refreshSessions($)
-    .catch(swallow)
-    .finally(() => {
-      pidLookup = undefined
-    })
-
-  return pidLookup
-}
-
-// What the mark says is the wait as it stands when the write begins, not as it stood when it was asked.
-const putMark = async ($: EngineInterface): Promise<void> => {
-  if (herePid === undefined) {
-    void learnPid($)
-      .then(() => (herePid === undefined ? undefined : writeMark($)))
-      .catch(swallow)
-
-    return
-  }
-
-  const home = await $.env.get('USERPROFILE')
-  if (home === undefined) return
-
-  const value = await read($, waiting)
-  await $.fs.write(markPath(home, herePid), markText(await $.session.id(), value?.reason ?? null, value?.sinceMs ?? 0))
-}
-
-// The writes go one after another, so a slow one never lands after a newer one.
-const inMarkOrder = serial()
-const writeMark = ($: EngineInterface): Promise<void> => inMarkOrder(() => putMark($))
-
-const setWaiting = async ($: EngineInterface, reason: WaitReason | null): Promise<void> => {
-  if (((await read($, waiting))?.reason ?? null) === reason) return
-
-  const value = reason === null ? null : { reason, sinceMs: await $.clock.now() }
-  await update($, waiting, () => value)
-  await writeMark($)
-}
-
-// A new prompt, the turn ending, or the session ending means whatever was asked is over.
-const endWaiting = async ($: EngineInterface): Promise<void> => {
-  asked.clear()
-  await setWaiting($, null)
-}
-
-// A call that returned has had its question answered or its dialog closed.
-// A permission wait ends once no call put to the decider is still pending.
-const settleWait = async ($: EngineInterface, tool: string, toolUseId: string | undefined): Promise<void> => {
-  if (toolUseId !== undefined) asked.delete(toolUseId)
-  const now = (await read($, waiting))?.reason
-  if ((now === 'question' && isQuestionTool(tool)) || (now === 'permission' && asked.size === 0)) await setWaiting($, null)
-}
-
-// The other live sessions that wait on the person: each one's mark, if the
-// session id inside it is the session the registry names.
-const readOthersWaiting = async ($: EngineInterface) => {
-  const home = await $.env.get('USERPROFILE')
-
-  return home === undefined ? [] : readWaits(home, await read($, sessions), path => $.fs.read(path).catch(() => ''))
-}
-
-// --- Polling ------------------------------------------------------------------
-// Five sources are read on their own schedules, and only while the pane is
-// showing: a pane nobody sees costs no request and no process. One pump looks
-// at them every few seconds and starts whichever is due and not already
-// running, so the schedules cannot overlap or double up.
-
-const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
-
-/** When each source is next due, epoch ms; 0 is due now. */
-const dueAt: Record<Source, number> = { claude: 0, fable: 0, codex: 0, git: 0, others: 0 }
-// When the registry and process table were last read; a failure waits out the same interval.
-let sessionsAt = 0
-const running = new Set<Source>()
+type Source = 'codex' | 'git'
+const EVERY: Record<Source, number> = { codex: 120_000, git: 30_000 }
+const dueAt: Record<Source, number> = { codex: 0, git: 0 }
+const busy = new Set<Source>()
 let pump: Timer | undefined
 
-// Fable's weekly figure comes from /api/oauth/usage. The request is authorised
-// by the engine's own handle (the credential never reaches this plugin), and
-// only a bearer login can use that endpoint. A failed answer keeps the last
-// figure and marks it stale. Resolves to how long to wait before asking again.
-let fableDelayMs = FABLE_POLL_MS
-
-const refreshFable = async ($: EngineInterface): Promise<number> => {
-  const auth = await $.session.authorize().catch(() => null)
-  const response =
-    auth === null || auth.kind !== 'bearer'
-      ? undefined
-      : await $.http
-          .fetch(USAGE_URL, {
-            auth: auth.handle,
-            headers: { 'anthropic-beta': 'oauth-2025-04-20', 'Content-Type': 'application/json' },
-          })
-          .catch(() => undefined)
-  const fable = response?.ok === true ? fableFromUsage(response.text) : undefined
-
-  await dispatch($, { type: 'fable', fable })
-  fableDelayMs = nextFableDelay(fableDelayMs, response?.ok === true, response?.headers['retry-after'])
-
-  return fableDelayMs
+async function isPaneShown($: EngineInterface) {
+  return (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
 }
 
-// Codex's figures are only displayed (see ./lib/codex-quota). The rollout's
-// path rides in the environment, never in the command text.
-const readCodex = async ($: EngineInterface): Promise<CodexQuota> => {
-  const home = await $.env.get('USERPROFILE')
-  if (home === undefined) return { note: 'USERPROFILE is not set' }
-  const root = await $.env.get('SystemRoot')
-  if (root === undefined) return { note: 'SystemRoot is not set' }
-
-  return readCodexQuota(home, {
-    readText: path => $.fs.read(path).catch(() => ''),
-    list: dir => $.fs.list(dir),
-    queryRollout: path =>
-      $.process
-        .run([powershellExe(root), '-NoProfile', '-NonInteractive', '-Command', ROLLOUT_QUERY], {
-          env: { ROLLOUT: path },
-          timeoutMs: 20000,
-        })
-        .then(done => done.stdout, () => ''),
-  })
-}
-
-// The same waits as the last read change nothing: no write, no redraw.
-const noteOthersWaiting = async ($: EngineInterface, rows: WaitingRow[]): Promise<void> => {
-  if (sameWaits((await read($, dash)).waitingOthers, rows)) return
-
-  await dispatch($, { type: 'waiting-others', rows })
-}
-
-// Whatever cannot be read leaves no banner: nothing is guessed.
-const readOthers = async ($: EngineInterface): Promise<number> => {
+async function runSource($: EngineInterface, source: Source) {
+  busy.add(source)
   try {
-    const now = await $.clock.now()
-    if (now - sessionsAt >= SESSIONS_MS) {
-      sessionsAt = now
-      await refreshSessions($)
-    }
-    await noteOthersWaiting($, await readOthersWaiting($))
-  } catch {
-    await noteOthersWaiting($, [])
-  }
-
-  return OTHERS_MS
-}
-
-// Each source reads, then answers how long to wait before it is read again.
-const readSource = async ($: EngineInterface, source: Source): Promise<number> => {
-  switch (source) {
-    case 'claude':
-      await refreshUsage($)
-
-      return CLAUDE_MS
-    case 'fable':
-      return refreshFable($)
-    case 'codex':
-      await dispatch($, { type: 'codex-quota', quota: await readCodex($) })
-
-      return CODEX_MS
-    case 'git':
-      await refreshGit($)
-
-      return GIT_MS
-    case 'others':
-      return readOthers($)
-  }
-}
-
-// A read that throws is tried again after the usual wait, or for Fable after its next backoff.
-const failureWait = (source: Source): number => {
-  if (source !== 'fable') return WAIT_MS[source]
-  fableDelayMs = nextFableDelay(fableDelayMs, false, undefined)
-
-  return fableDelayMs
-}
-
-const runSource = async ($: EngineInterface, source: Source): Promise<void> => {
-  running.add(source)
-  try {
-    const wait = await readSource($, source).catch(() => failureWait(source))
-
-    dueAt[source] = (await $.clock.now()) + wait
+    if (source === 'codex') await refreshCodex($).catch(swallow)
+    else await refreshGit($).catch(swallow)
+    dueAt[source] = (await $.clock.now()) + EVERY[source]
   } finally {
-    running.delete(source)
+    busy.delete(source)
   }
 }
 
-async function pumpPolls($: EngineInterface): Promise<void> {
-  if (!(await isPaneShown($))) return
-
-  for (const source of dueSources(dueAt, running, await $.clock.now())) void runSource($, source).catch(swallow)
-}
-
-// 重新整理: every source but Fable is due now, and the registry is read afresh.
-// The pump starts the due ones that are not already running, so a read in
-// flight is not doubled; Fable keeps its own schedule and backoff.
-const refreshNow = async ($: EngineInterface): Promise<void> => {
-  for (const source of REFRESH_SOURCES) dueAt[source] = 0
-  sessionsAt = 0
-  await pumpPolls($)
+async function pumpPolls($: EngineInterface) {
+  if (!(await isPaneShown($).catch(() => false))) return
+  const now = await $.clock.now()
+  for (const source of ['codex', 'git'] as const) {
+    if (!busy.has(source) && dueAt[source] <= now) void runSource($, source).catch(swallow)
+  }
 }
 
 // One pump per plugin instance: a second start (a hot reload) replaces the first.
-const startPolling = async ($: EngineInterface): Promise<void> => {
+function startPolling($: EngineInterface) {
   pump?.cancel()
-  pump = $.clock.every(PUMP_MS, () => void pumpPolls($).catch(swallow))
+  pump = $.clock.every(2_000, () => void pumpPolls($).catch(swallow))
 }
 
-// The first start opens the pane on its own, once: a hot reload does not reopen one the person closed.
-const openOnce = async ($: EngineInterface): Promise<void> => {
-  if (await read($, autoOpened)) return
+// ---------------------------------------------------------------- hooks
 
-  await update($, autoOpened, () => true)
-  void openPane($, false).catch(swallow)
-}
+export const register: Register = (on, options) => {
+  const cfg = parseConfig(options)
+  const C = PALETTES[cfg.palette]
+  // tool.check carries no loop id; the tool.call around it does, keyed by the call's id.
+  const callLoop = new Map<string, string | null>()
 
-// --- Codex runs -------------------------------------------------------------
-// `codex exec` runs the main session starts through Bash or PowerShell. The
-// run is noted when the call begins and ended by its result, by the
-// notification of a background task, or (inferred) by the next stop.
-
-type ShellCall = { tool: string; tool_use_id: string; command: string; description?: string }
-
-// A run's own failure (a throw from the tool) ends it as failed and goes on up.
-const trackCodex = async (
-  $: EngineInterface,
-  call: ShellCall,
-  run: () => Promise<ToolCallResult>,
-): Promise<ToolCallResult> => {
-  const codex = describeCodex(call.command, call.description, call.tool === 'PowerShell' ? 'powershell' : 'bash')
-  if (codex === undefined) return run()
-
-  const toolUseId = call.tool_use_id
-  await record($, at => ({ type: 'codex-start', at, toolUseId, ...codex }))
-  try {
-    const res = await run()
-    await record($, callEnd(toolUseId, res)).catch(swallow)
-
-    return res
-  } catch (error) {
-    await record($, at => ({ type: 'codex-end', at, id: toolUseId, ok: false }))
-    throw error
-  }
-}
-
-// What the output file of a finished background run holds is read once, from its head.
-const readOutputHead = async ($: EngineInterface, path: string | undefined): Promise<string | undefined> =>
-  path === undefined ? undefined : $.fs.read(path).then(text => text.slice(0, HEAD_CHARS), () => undefined)
-
-const endBackground = async ($: EngineInterface, n: Notification): Promise<void> => {
-  const at = await $.clock.now()
-  const job = findCodex((await read($, dash)).codex, n.id, n.toolUseId)
-  if (job === undefined) return
-
-  const sessionId = job.sessionId ?? sessionIdFrom(await readOutputHead($, n.outputFile))
-  await dispatch($, {
-    type: 'codex-end',
-    at,
-    id: job.id,
-    ok: n.ok,
-    ...(sessionId === undefined ? {} : { sessionId }),
-  })
-}
-
-const onNotifications = async ($: EngineInterface, body: string): Promise<void> => {
-  for (const n of parseNotifications(body)) await endBackground($, n).catch(swallow)
-}
-
-export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: PANE, description: 'Toggle the CC dashboard pane', immediate: true }).catch(swallow)
-    // None of the steps below may stop the ones after it: a failure leaves that step undone and the session going.
-    await openOnce($).catch(swallow)
-    await initSession($, await $.session.turns().catch(() => 0)).catch(swallow)
-    await refreshTimer($).catch(swallow)
-    await startPolling($).catch(swallow)
+    await $.command.register({
+      name: 'dashboard',
+      description: 'CC Dashboard 即時面板：開啟、關閉、重設、重新整理，或設定版面',
+      argumentHint: '[open|close|reset|refresh|layout auto|compact|wide|mini]',
+    })
+    await migrate($)
+    // A host without usage (headless, an SDK host, a session not yet bound) just starts without it.
+    const u = await $.session.usage().catch(() => null)
+    if (u) {
+      await update($, usage, x => ({
+        ...normalize(DEFAULT_USAGE, x),
+        pct: u.context.percent ?? null,
+        tokens: u.context.tokens ?? null,
+        window: u.context.window,
+        costUsd: u.cost?.usd ?? null,
+        limits: u.rateLimits.map(limitOf),
+      }))
+    }
+    if (cfg.openOnStart) void openPane($).catch(() => undefined)
+    await refreshStatus($, cfg)
+    startPolling($)
     void pumpPolls($).catch(swallow)
-    // A fresh load writes the wait as it stands: none on a start, the open one when a reload lands while a dialog is up.
-    void writeMark($).catch(swallow)
-
     return next(e)
   })
 
-  // /clear and /resume carry on in this process with no session.start: the
-  // state starts over and the next turn reads the new session in.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear' || e.reason === 'resume') await dispatch($, { type: 'reset' }).catch(swallow)
-    await endWaiting($).catch(swallow)
-
+    if (e.reason === 'clear') {
+      await resetAll($)
+      await refreshStatus($, cfg)
+    }
     return next(e)
   })
 
-  // A pane that cannot open (no surface attached) is told to the person, not thrown.
-  on('command.run', { command: PANE }, async $ => {
-    await togglePane($)
+  on('command.run', { command: 'dashboard' }, async ($, e) => {
+    const [verb = 'open', arg = ''] = e.args.trim().split(/\s+/)
+    if (verb === 'close') {
+      await $.ui.close({ id: PANE })
+      return { text: 'Dashboard 已關閉。' }
+    }
+    if (verb === 'reset') {
+      await resetAll($)
+      await refreshStatus($, cfg)
+      return { text: 'Dashboard 已重設。' }
+    }
+    if (verb === 'refresh') {
+      // Read now, whether or not the pane shows; the schedules start over from here.
+      await Promise.all((['codex', 'git'] as const).filter(src => !busy.has(src)).map(src => runSource($, src)))
+      return { text: 'Codex 額度與分支已重新讀取。' }
+    }
+    if (verb === 'layout') {
+      const layout: Layout | null = arg === 'compact' || arg === 'wide' || arg === 'auto' || arg === 'mini' ? arg : null
+      if (!layout) return { text: '用法：/dashboard layout auto|compact|wide|mini' }
+      await update($, view, v => ({ ...normalize(DEFAULT_VIEW, v), layout }))
+      const opened = await openPane($)
+      return { text: opened.isPlaced ? `Dashboard 版面：${layout}。` : `版面設為 ${layout}；面板尚未顯示：${opened.reason}` }
+    }
+    const opened = await openPane($)
+    if (!opened.isPlaced) return { text: `Dashboard 尚未顯示：${opened.reason}` }
+    void pumpPolls($).catch(swallow)
+    return { text: 'Dashboard 已開啟。用 ctrl+x tab 聚焦；1-6 展開子代理，f/s/o 展開權限明細，u 展開未審清單。' }
+  })
 
-    return {}
-  }).catch(async (_$, _e, next) => ({ text: `dashboard: ${next.error.message}` }))
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    await noteMode($, e.permission_mode)
+    return next(e)
+  })
+
+  on('agent.offer', async ($, e, next) => {
+    const offered = await next(e)
+    if (cfg.architect.test(e.agent) || (cfg.matchDescriptions && cfg.architect.test(e.description))) {
+      await update($, roster, r => {
+        const x = normalize(DEFAULT_ROSTER, r)
+        return x.architectTypes.includes(e.agent) ? x : { architectTypes: [...listOf<string>(x.architectTypes), e.agent].slice(-20) }
+      })
+    }
+    return offered
+  })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) {
-      await startTurn($).catch(swallow)
-    } else {
-      // A subagent that finished and is given a new turn is running again.
-      await dispatch($, { type: 'agent-resume', id: e.agentId }).catch(swallow)
-      await syncAgents($).catch(swallow)
+    const [now, cost] = await Promise.all([$.clock.now(), costNow($)])
+    await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now, costAtStart: cost }))
+    await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: true }))
+    // A background architect's report reaches the main loop as the text opening this turn. The
+    // SubagentHandback tool call (in tool.call) normally carries it first; this is the fallback.
+    const back = e.text ? handbackOf(e.text) : null
+    const a = back ? await getArchitect($) : null
+    if (back && a && a.ids.includes(back.from)) {
+      const advice = adviceLine(back.body)
+      if (advice && advice !== a.lastAdvice) await noteAdvice($, cfg, advice)
+    } else if (e.text) {
+      const p = promptLine(e.text)
+      await say($, p.who, p.text)
     }
-
     return next(e)
   })
 
-  // The main request names its model and effort; a subagent's names that
-  // agent's model. The advisor runs inside the request, on the API's side, so
-  // no tool hook sees it: it shows only in the finished step's `serverToolUses`.
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId === undefined) {
-      await dispatch($, { type: 'step', model: e.model, effort: effortLabel(e.effort) }).catch(swallow)
-    } else {
-      await dispatch($, { type: 'agent-model', id: e.agentId, model: e.model }).catch(swallow)
+    // The main loop's model is known when its request starts; a long first request shouldn't read "—".
+    if (!e.agentId) {
+      await update($, main, m => {
+        const x = normalize(DEFAULT_MAIN, m)
+        return { ...x, model: e.model, effort: String(e.effort ?? x.effort), steps: x.steps + 1 }
+      })
+      // Time the response as it passes: the first piece that is not the engine's envelope, then the
+      // stop chunk. Two clock reads in the stream and nothing stored until it has ended.
+      const sentAt = await $.clock.now()
+      let firstAt: number | null = null
+      let stopAt: number | null = null
+      const s = next(e)
+      for await (const c of s) {
+        if (c.kind === 'stop') stopAt = await $.clock.now()
+        else if (firstAt === null && c.kind !== 'engine') firstAt = await $.clock.now()
+        yield c
+      }
+      const result = await s.result
+      const speed = result.usage && stopAt !== null ? stepSpeed(sentAt, firstAt, stopAt, result.usage.output_tokens) : null
+      if (speed) await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), speed }))
+      return result
     }
-
     const result = yield* next(e)
-
-    for (const at of advisorTimes(result.serverToolUses)) {
-      await dispatch($, { type: 'advisor-consult', at }).catch(swallow)
+    const id = e.agentId
+    const [cards, a] = await Promise.all([getCards($), getArchitect($)])
+    if (cards.some(c => c.id === id)) {
+      const step = { model: e.model, usage: result.usage, stopReason: result.stopReason }
+      await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? applyStep(c, step) : c)))
+      if (result.stopReason === 'max_tokens') await say($, await whoIs($, id), '達到 max_tokens', 'error', id)
+    } else if (!a.ids.includes(id)) {
+      const now = await $.clock.now()
+      await update($, loops, l => stepLoop(listOf<Loop>(l), id, now))
     }
-
-    return result
-  })
-
-  // Only the main conversation's own calls are shown, and the result goes back
-  // unchanged. A review is noted whoever starts it: the tree is read as the call
-  // begins, and kept only if the call is not refused and does not fail. A
-  // question put to the person is a wait from the call's start to its return,
-  // whoever asks.
-  on('tool.call', async ($, e, next) => {
-    const tool = String(e.tool)
-    const review = isReviewCall(tool, e) ? readTreeQuietly($) : undefined
-    if (isQuestionTool(tool)) await setWaiting($, 'question').catch(swallow)
-    const shown = async () => {
-      await record($, at => ({ type: 'tool-start', at, name: String(e.tool) }))
-
-      const run = () => next(e)
-      const result = e.tool === 'Bash' || e.tool === 'PowerShell' ? trackCodex($, e, run) : run()
-
-      return result.finally(() => void dispatch($, { type: 'tool-end' }).catch(swallow))
-    }
-    const call = e.agentId === undefined ? shown() : next(e)
-    const result = await call.finally(() => void settleWait($, tool, e.tool_use_id).catch(swallow))
-
-    if (review !== undefined && result.deny === undefined && result.isError === undefined) {
-      void review.then(tree => recordReview($, tree)).catch(swallow)
-    }
-
-    return result
-  }).catch(async (_$, e, next) => next(e))
-
-  // A background task's notification arrives as a prompt of its own origin. A
-  // typed /code-review has no result to wait for: it counts as it is sent.
-  on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind === 'task-notification') await onNotifications($, e.text).catch(swallow)
-
-    const result = await next(e)
-    if (result.drop === undefined && isPersonPrompt(e.origin.kind)) {
-      if (isReviewPrompt(e.text)) void readTreeQuietly($).then(tree => recordReview($, tree)).catch(swallow)
-      // What the person types answers whatever was asked.
-      await endWaiting($).catch(swallow)
-    }
-
-    return result
-  }).catch(async (_$, e, next) => next(e))
-
-  // A call put to the person's decision: its permission dialog opens (the engine
-  // reports that below) and ends with the call.
-  on('tool.check', async ($, e, next) => {
-    const verdict = await next(e)
-    if (verdict.decision === 'ask' && e.tool_use_id !== undefined) asked.add(e.tool_use_id)
-
-    return verdict
-  }).catch(async (_$, e, next) => next(e))
-
-  on('classic.PermissionRequest', async ($, e, next) => {
-    await setWaiting($, 'permission').catch(swallow)
-
-    return next(e)
-  }).catch(async (_$, e, next) => next(e))
-
-  // At the end of a turn the engine's own list of background tasks says which runs are still alive.
-  on('classic.Stop', async ($, e, next) => {
-    const liveIds = e.background_tasks?.map(task => task.id)
-    await record($, at => ({ type: 'codex-stop', at, ...(liveIds === undefined ? {} : { liveIds }) }))
-
-    return next(e)
-  }).catch(async (_$, e, next) => next(e))
-
-  on('agent.spawn', async ($, e, next) => {
-    const result = await next(e)
-
-    if (result.deny === undefined && result.agentId !== undefined) {
-      const id = result.agentId
-
-      await record($, at => spawnEvent(e, id, result.model, at))
-      await syncAgents($).catch(swallow)
-    }
-
-    return result
-  }).catch(async (_$, e, next) => next(e))
-
-  on('turn.complete', async ($, e, next) => {
-    const result = await next(e)
-    const agentId = e.agentId
-
-    if (agentId === undefined) {
-      await record($, at => ({ type: 'turn-end', at, durationMs: e.durationMs }))
-      // The turn may have changed files: the next pump reads git without waiting out its 30 seconds.
-      dueAt.git = 0
-      await endWaiting($).catch(swallow)
-    } else {
-      await record($, at => ({ type: 'agent-done', at, id: agentId, reason: e.reason }))
-      await syncAgents($).catch(swallow)
-      // The agent's list entry may still read `running` at this instant.
-      $.clock.after(AGENT_RESYNC_MS, () => void syncAgents($).catch(swallow))
-    }
-
     return result
   })
 
   on('session.measure', async ($, e, next) => {
-    await dispatch($, { type: 'context', context: e.context }).catch(swallow)
-    await dispatch($, { type: 'claude-quota', ...claudeWindows(e.rateLimits) }).catch(swallow)
-
+    await update($, usage, x => ({
+      ...normalize(DEFAULT_USAGE, x),
+      pct: e.context.percent ?? null,
+      tokens: e.context.tokens ?? null,
+      window: e.context.window,
+      costUsd: e.cost?.usd ?? null,
+      limits: e.rateLimits.map(limitOf),
+    }))
+    if (e.changed.includes('context')) await refreshStatus($, cfg)
     return next(e)
   })
 
+  on('session.compact', async ($, e, next) => {
+    const done = await next(e)
+    if (!e.agentId && e.trigger !== 'precompute') {
+      const now = await $.clock.now()
+      await update($, usage, x => {
+        const u = normalize(DEFAULT_USAGE, x)
+        return { ...u, compactions: u.compactions + 1, lastCompactAt: now }
+      })
+      await say($, 'main', `上下文已壓縮（${e.trigger}）`)
+    }
+    return done
+  })
+
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    if (e.tool_use_id) {
+      const check: Check = {
+        id: e.tool_use_id,
+        tool: e.tool,
+        bucket: bucketOf(e.tool),
+        verdict: verdict.decision === 'allow' ? 'rule' : verdict.decision,
+        inSubagent: Boolean(callLoop.get(e.tool_use_id)),
+        detail: shorten(describeInput(e.tool, e.input), 90),
+        at: await $.clock.now(),
+      }
+      await update($, gate, g => recordCheck(normalizeGate(g), check))
+      // The status line updates when the call settles; only a refusal ends here.
+      if (verdict.decision === 'deny') {
+        await say($, 'gate', `規則拒絕 · ${check.detail}`, 'error')
+        await refreshStatus($, cfg)
+      }
+    }
+    return verdict
+  })
+
+  on('tool.call', async ($, e, next) => {
+    callLoop.set(e.tool_use_id, e.agentId ?? null)
+    // A review is noted whoever starts it: the tree is read as the call begins, and kept only if
+    // the call is not refused and does not fail.
+    const review = isReviewCall(String(e.tool), e) ? readTreeQuietly($) : undefined
+    const ran = await next(e).finally(() => callLoop.delete(e.tool_use_id))
+    const didRun = ran.deny === undefined
+    if (review !== undefined && didRun && ran.isError !== true) void review.then(tree => recordReview($, tree)).catch(swallow)
+    // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
+    const g0 = await getGate($)
+    const isSettled = settleCheck(g0, e.tool_use_id, didRun) !== g0
+    if (isSettled) await update($, gate, g => settleCheck(normalizeGate(g), e.tool_use_id, didRun))
+    // A background agent hands its report back through this tool; an architect's report is its advice.
+    if (String(e.tool) === 'SubagentHandback') {
+      const message = (e as unknown as { message?: unknown }).message
+      const a = e.agentId ? await getArchitect($) : null
+      if (a && e.agentId && a.ids.includes(e.agentId) && typeof message === 'string') {
+        const advice = adviceLine(message)
+        if (advice && advice !== a.lastAdvice) await noteAdvice($, cfg, advice)
+      }
+      return ran
+    }
+    if (e.tool === 'Agent') {
+      if (isSettled) await refreshStatus($, cfg)
+      return ran
+    }
+    const hasFailed = didRun && ran.isError === true
+    const isEdit = !hasFailed && didRun && EDIT_TOOLS.has(e.tool)
+    const t0 = await getTurn($)
+    if (isEdit || hasFailed || (!e.agentId && t0.errorStreak > 0)) {
+      await update($, turn, t => afterCall(normalize(DEFAULT_TURN, t), { inSubagent: Boolean(e.agentId), hasFailed, isEdit }))
+    }
+    const text = shorten(describeInput(e.tool, e), 64)
+    if (e.agentId) {
+      const id = e.agentId
+      await update($, agents, list =>
+        listOf<unknown>(list)
+          .map(normalizeCard)
+          .map(c => (c.id === id ? noteTool(c, { tool: e.tool, text, isError: hasFailed || ran.deny !== undefined }) : c)),
+      )
+    }
+    // The log keeps what is worth a glance: refusals, errors and edits; the rest is on the cards.
+    if (ran.deny !== undefined) await say($, await whoIs($, e.agentId), `${text}  已拒絕`, 'error', e.agentId ?? null)
+    else if (hasFailed) await say($, await whoIs($, e.agentId), `${text}  ✗`, 'error', e.agentId ?? null)
+    else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
+    if (isSettled || !didRun) await refreshStatus($, cfg)
+    return ran
+  })
+
+  // A typed /…review has no result to wait for: it counts as it is sent, if the person typed it.
+  on('prompt.submit', async ($, e, next) => {
+    const result = await next(e)
+    if (result.drop === undefined && isPersonPrompt(e.origin.kind) && isReviewPrompt(e.text)) {
+      void readTreeQuietly($)
+        .then(tree => recordReview($, tree))
+        .catch(swallow)
+    }
+    return result
+  }).catch(async (_$, e, next) => next(e))
+
+  // A server-side review tool never reaches tool.call: it shows only in the assistant's rows.
+  on('session.append', async ($, e, next) => {
+    if (!e.agentId && e.message.type === 'assistant') {
+      const a = await getArchitect($)
+      // Consults this row opened: their result may be in the same row, after the stale read above.
+      const opened = new Set<string>()
+      for (const block of e.message.content as unknown as readonly ServerBlock[]) {
+        if (block.type === 'server_tool_use' && block.name && block.id && cfg.architect.test(block.name)) {
+          if (a.seen.includes(block.id)) continue
+          const id = block.id
+          await update($, architect, x => {
+            const y = normalize(DEFAULT_ARCHITECT, x)
+            return { ...y, seen: [...listOf<string>(y.seen), id].slice(-60) }
+          })
+          opened.add(id)
+          await consultStarted($, cfg, id, `${block.name} tool`)
+        } else if (block.type.endsWith('_tool_result') && block.tool_use_id) {
+          const id = block.tool_use_id
+          const isOpen = opened.has(id) || (await getArchitect($)).consults.some(c => c.id === id && c.endAt === null)
+          if (isOpen) await consultEnded($, cfg, null, id)
+        }
+      }
+    }
+    return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (!e.parentAgentId) await noteMode($, e.permissionMode)
+    if (started.deny !== undefined || !started.agentId) return started
+    const id = started.agentId
+    if (await isArchitectType($, cfg, e.subagentType)) {
+      await update($, architect, a => {
+        const x = normalize(DEFAULT_ARCHITECT, a)
+        return { ...x, ids: [...listOf<string>(x.ids), id].slice(-40) }
+      })
+      await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
+      await consultStarted($, cfg, id, e.subagentType.split(':').pop() ?? 'agent')
+      return started
+    }
+    const card: AgentCard = {
+      ...normalizeCard({}),
+      id,
+      type: e.name ?? e.subagentType,
+      model: started.model,
+      description: e.description,
+      spawnedAt: await $.clock.now(),
+    }
+    await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
+    await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
+    await say($, shorten(cardTitle(card), 12), `啟動 · ${card.type}`, 'info', id)
+    await refreshStatus($, cfg)
+    return started
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    const id = e.agentId
+    const now = await $.clock.now()
+    if (!id) {
+      const [t, cards, cost] = await Promise.all([getTurn($), getCards($), costNow($)])
+      const r = receiptOf(t, {
+        durationMs: e.durationMs,
+        agentsSince: cards.filter(c => c.spawnedAt >= t.startedAt).length,
+        costNow: cost,
+        reason: e.reason,
+      })
+      await update($, receipt, () => r)
+      await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: false }))
+      // The turn may have changed files: the next pump reads git without waiting out its 30 seconds.
+      dueAt.git = 0
+      await refreshStatus($, cfg)
+      return done
+    }
+    if ((await getArchitect($)).ids.includes(id)) {
+      await consultEnded($, cfg, e.answer, id)
+      return done
+    }
+    const cards = await getCards($)
+    if (cards.some(c => c.id === id)) {
+      const status = e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'stopped' : 'failed'
+      await update($, agents, list =>
+        listOf<unknown>(list)
+          .map(normalizeCard)
+          .map(c => (c.id === id ? { ...c, status, endedAt: now, answer: shorten(e.answer, 400) } : c)),
+      )
+      const card = cards.find(c => c.id === id)
+      const took = card ? fmtDuration(now - card.spawnedAt) : ''
+      await say($, await whoIs($, id), status === 'done' ? `完成 · ${took}` : statusLabel(status), status === 'done' ? 'done' : 'error', id)
+    } else {
+      await update($, loops, l => listOf<Loop>(l).map(x => (x.id === id ? { ...x, isDone: true, lastAt: now } : x)))
+    }
+    await refreshStatus($, cfg)
+    return done
+  })
+
+  // ---------------------------------------------------------------- drawing
+
+  const BUCKET_LABEL: Record<Bucket, string> = { file: '檔案', shell: '指令', other: '其他' }
+  const receiptText = (x: { durationMs: number; agents: number; edits: number; errors: number }) =>
+    `上回合 ${fmtDuration(x.durationMs)} · 子代理 ${x.agents} · 編輯 ${x.edits} · 錯誤 ${x.errors}`
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    scheduleSizing($, e.viewport?.rows)
-    const state = await read($, dash)
-    const fold = await read($, folded)
-    const view = {
-      state,
-      columns: e.props.bodyColumns,
-      rows: e.props.scroll.bodyRows,
-      now: await $.clock.now(),
-      isUnreviewedOpen: await read($, unreviewedOpen),
-      onToggleUnreviewed: () => void update($, unreviewedOpen, isOpen => !isOpen).catch(swallow),
-      isQuotaFolded: fold.quota,
-      isGitFolded: fold.git,
-      onToggleQuota: () => void update($, folded, now => ({ ...now, quota: !now.quota })).catch(swallow),
-      onToggleGit: () => void update($, folded, now => ({ ...now, git: !now.git })).catch(swallow),
-      onRefresh: () => void refreshNow($).catch(swallow),
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button } = els
+    const hasClient = 'Client' in els
+    const [m, u, a, g, cards, lp, lines, t, r, v, now, cx, gs] = await Promise.all([
+      getMain($),
+      getUsage($),
+      getArchitect($),
+      getGate($),
+      getCards($),
+      getLoops($),
+      getLog($),
+      getTurn($),
+      read($, receipt),
+      getView($),
+      $.clock.now(),
+      read($, codex),
+      read($, git),
+    ])
+    const W = Math.max(40, e.props.bodyColumns)
+    const layout = v.layout ?? cfg.layout
+    const isWide = layout === 'wide' || (layout === 'auto' && W >= 110)
+    const colW = isWide ? Math.floor((W - 2) / 2) : W
+    const modelName = prettyModel(m.model)
+    const viewed = e.props.view?.agentId ?? null
+    const advising = isAdvising(a)
+    const running = cards.filter(c => c.status === 'running')
+    const showArchitect = a.consults.length > 0 || a.ids.length > 0
+    const motion = cfg.motion && hasClient
+    // A panel with nothing to show yet takes no room: most sessions never spawn an agent.
+    const isEmpty: Record<Panel, boolean> = {
+      main: false,
+      codex: cx === null,
+      git: gs === null,
+      architect: !showArchitect,
+      gate: g.recent.length === 0 && gateSummary(g).total === 0,
+      agents: cards.length === 0,
+      loops: lp.length === 0,
+      receipt: !m.isRunning && !r,
+      log: false,
+    }
+    const panels = cfg.panels.filter(p => !isEmpty[p])
+    const decider = m.mode === 'auto' ? '分類器' : '你'
+
+    // A connector between panels: animated while its flow is live, a dim line otherwise.
+    const rail = (key: string, active: boolean, color: string, width: number, marks: number[] = [], isMerge = false) =>
+      motion ? (
+        <els.Client
+          key={key}
+          module="./rail.tsx"
+          width={width}
+          height={1}
+          props={{ active, width, color, dim: C.faint, marks, isMerge }}
+        />
+      ) : (
+        <Text color={C.faint}>{'─'.repeat(Math.max(1, width))}</Text>
+      )
+
+    // A start time of 0 is unknown (state saved before it was recorded): no clock, not decades.
+    const clock = (key: string, since: number, endAt: number | null, color: string) =>
+      since <= 0 ? (
+        <Text color={color}>—</Text>
+      ) : hasClient ? (
+        <els.Client key={key} module="./elapsed.tsx" props={{ since, now, endAt, color }} />
+      ) : (
+        <Text color={color}>{fmtTimer((endAt ?? now) - since)}</Text>
+      )
+
+    // ---- main
+    const effortN = { low: 1, medium: 2, high: 3, xhigh: 4, max: 4 }[m.effort] ?? 0
+    const ctxGauge = u.pct !== null ? gauge(u.pct, 10) : null
+    const mainPanel = (w: number) => (
+      <Box flexDirection="column" borderStyle="round" borderColor={C.main} paddingX={1} width={w}>
+        <Box justifyContent="space-between">
+          <Text color={C.main} bold>
+            {modelName} · 主模型
+          </Text>
+          <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? '● 工作中' : '○ 閒置'}</Text>
+        </Box>
+        <Text wrap="truncate">
+          <Text dimColor>強度 </Text>
+          <Text color={C.main}>{'▮'.repeat(effortN) + '▯'.repeat(4 - effortN)} </Text>
+          <Text color={C.main} bold>
+            {m.effort || '—'}
+          </Text>
+          {m.mode ? <Text dimColor>{`   模式 ${m.mode}`}</Text> : null}
+          <Text dimColor>{`   請求 ${m.steps}`}</Text>
+        </Text>
+        {ctxGauge ? (
+          <Text wrap="truncate">
+            <Text dimColor>上下文 </Text>
+            <Text color={u.pct !== null && u.pct >= 80 ? C.warn : C.main}>{ctxGauge.on}</Text>
+            <Text color={C.faint}>{ctxGauge.off}</Text>
+            <Text bold>{` ${Math.round(u.pct ?? 0)}%`}</Text>
+            {u.tokens !== null ? <Text dimColor>{` ${kTokens(u.tokens)}/${kTokens(u.window)}`}</Text> : null}
+            {u.compactions > 0 ? <Text color={C.amber}>{`  ⟲${u.compactions}`}</Text> : null}
+          </Text>
+        ) : null}
+        {u.costUsd !== null || u.limits.length > 0 ? (
+          <Text wrap="truncate">
+            {u.costUsd !== null ? <Text color={C.text}>{`${fmtUsd(u.costUsd)}   `}</Text> : null}
+            {u.limits.slice(0, 2).map(l => {
+              const lg = gauge(l.pct, 5)
+              // The time to each reset where the line has room for it: both windows fit from 56 columns,
+              // so a wide pane's half column (59 at 120) has them and a 40-column pane keeps its gauges.
+              const resetIn = w >= 56 ? fmtResetIn(l.resetsAt, now) : ''
+              return (
+                <Text wrap="truncate">
+                  <Text dimColor>{`${limitLabel(l.kind)} `}</Text>
+                  <Text color={l.pct >= 80 ? C.warn : C.main}>{lg.on}</Text>
+                  <Text color={C.faint}>{lg.off}</Text>
+                  <Text dimColor>{` ${Math.round(l.pct)}%${resetIn ? ` ↻${resetIn}` : ''}  `}</Text>
+                </Text>
+              )
+            })}
+          </Text>
+        ) : null}
+        {m.speed ? <Text dimColor wrap="truncate">{`上次請求  ${fmtSpeed(m.speed)}`}</Text> : null}
+      </Box>
+    )
+
+    // ---- architect
+    const lastConsult = a.consults[a.consults.length - 1]
+    const architectPanel = (w: number) => {
+      const tl = consultTimeline(a, now, Math.max(8, w - 4))
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor={C.arch} paddingX={1} width={w}>
+          <Box justifyContent="space-between">
+            <Text color={C.arch} bold>
+              {cfg.architectLabel} · {advising ? '諮詢中' : '待命'}
+            </Text>
+            <Text>
+              <Text dimColor>諮詢 </Text>
+              <Text color={C.arch} bold>
+                {a.consults.length}
+              </Text>
+            </Text>
+          </Box>
+          <Text color={C.arch}>{tl}</Text>
+          {lastConsult ? (
+            <Text dimColor wrap="truncate">
+              {advising
+                ? `自 ${fmtClock(lastConsult.at)} 起諮詢中`
+                : `上次 ${fmtDuration(now - (lastConsult.endAt ?? lastConsult.at))} 前 · 耗時 ${fmtDuration((lastConsult.endAt ?? now) - lastConsult.at)}`}
+            </Text>
+          ) : (
+            <Text dimColor>尚未諮詢</Text>
+          )}
+          {cfg.moments ? (
+            <Box flexWrap="wrap" columnGap={2}>
+              {(['before a plan', 'error repeats', 'before done'] as const).map(mo => {
+                const isOn = lastConsult?.moment === mo
+                return (
+                  <Text color={isOn ? C.arch : C.dim} bold={isOn}>
+                    {isOn ? '◆' : '◇'} {MOMENT_LABEL[mo]}
+                  </Text>
+                )
+              })}
+              <Text color={C.faint}>（推測）</Text>
+            </Box>
+          ) : null}
+          {a.lastAdvice ? (
+            <Text color={C.arch} wrap="truncate">
+              » {a.lastAdvice}
+            </Text>
+          ) : null}
+        </Box>
+      )
     }
 
-    return dashboardTree($.ui.resolve(e), view)
+    // ---- gate
+    const s = gateSummary(g)
+    const verdictColor = (c: Check) =>
+      c.verdict === 'rule' ? C.gate : c.verdict === 'cleared' ? C.cleared : c.verdict === 'ask' ? C.amber : C.warn
+    const gatePanel = (w: number) => {
+      const strip = g.recent.slice(-Math.max(8, w - 4))
+      const open = v.gateOpen
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor={C.gate} paddingX={1} width={w}>
+          <Box justifyContent="space-between">
+            <Text color={C.gate} bold>
+              {cfg.gateLabel} · 檢查
+            </Text>
+            <Text dimColor>{`${s.total} 次`}</Text>
+          </Box>
+          <Box>
+            {strip.length === 0 ? <Text color={C.faint}>尚無檢查</Text> : null}
+            {strip.map(c => (
+              <Text color={verdictColor(c)} dimColor={c.inSubagent}>
+                {c.verdict === 'deny' ? '✗' : '■'}
+              </Text>
+            ))}
+          </Box>
+          <Text wrap="truncate">
+            <Text color={C.gate}>■</Text>
+            <Text dimColor>{` ${s.rule} 允許  `}</Text>
+            <Text color={C.cleared}>■</Text>
+            <Text dimColor>{` ${s.cleared} ${decider}  `}</Text>
+            {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} 待決  `}</Text> : null}
+            <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} 拒絕`}</Text>
+            {w >= 80 && g.recent.some(c => c.inSubagent) ? <Text color={C.faint}>{'  暗色：子代理'}</Text> : null}
+          </Text>
+          <Box columnGap={2}>
+            {(['file', 'shell', 'other'] as const).map((b: Bucket) => {
+              const tl = g.totals[b]
+              const n = tl.rule + tl.ask + tl.cleared + tl.deny
+              return (
+                <Button
+                  key={`gate-${b}`}
+                  plain
+                  hotkey={b[0]}
+                  label={`${BUCKET_LABEL[b]} ${n}${open === b ? ' ▾' : ''}`}
+                  dimColor={n === 0}
+                  onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === b ? null : b }))}
+                />
+              )
+            })}
+          </Box>
+          {open
+            ? g.recent
+                .filter(c => c.bucket === open)
+                .slice(-5)
+                .map(c => (
+                  <Text wrap="truncate">
+                    <Text color={verdictColor(c)}>{c.verdict === 'deny' ? '✗ ' : '■ '}</Text>
+                    <Text color={C.dim}>{`${(c.verdict === 'rule' ? '允許' : c.verdict === 'cleared' ? decider : c.verdict === 'ask' ? '待決' : '拒絕').padEnd(4, '　')} `}</Text>
+                    <Text dimColor={c.inSubagent}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
+                  </Text>
+                ))
+            : null}
+        </Box>
+      )
+    }
+
+    // ---- agents: cards up to the limit, swimlanes beyond it
+    const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
+    const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
+    const expandOnPress = (id: string) => () =>
+      update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: normalize(DEFAULT_VIEW, x).expanded === id ? null : id }))
+
+    const agentsPanel = (w: number) => {
+      // Cards need 20 columns each; when the pane can't hold the limit, lanes take over.
+      const fit = Math.max(1, Math.min(cfg.maxCards, Math.floor((w + 1) / 21)))
+      const useLanes = cards.length > fit
+      const header = (
+        <Box justifyContent="space-between" width={w}>
+          <Text bold>{`子代理 · ${running.length} 執行中 · 共 ${cards.length}`}</Text>
+          {cards.length > 0 ? <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} 展開</Text> : null}
+        </Box>
+      )
+      if (cards.length === 0) {
+        return (
+          <Box flexDirection="column" width={w}>
+            {header}
+            <Text color={C.faint}>尚無子代理</Text>
+          </Box>
+        )
+      }
+      if (useLanes) {
+        const shown = cards.slice(-6)
+        const barW = Math.max(8, w - 28)
+        const geo = lanes(shown, now, barW)
+        return (
+          <Box flexDirection="column" width={w}>
+            {header}
+            {cards.length > shown.length ? <Text color={C.faint}>{`+${cards.length - shown.length} 個較早的`}</Text> : null}
+            {shown.map((c, i) => {
+              const gm = geo[i]
+              const isViewed = viewed === c.id
+              return (
+                <Box>
+                  <Text color={statusColor(c)} bold={isViewed}>{`${isViewed ? '▶' : glyph(c)} `}</Text>
+                  <Box width={17}>
+                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14)} onPress={expandOnPress(c.id)} />
+                  </Box>
+                  <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
+                  <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
+                  <Text color={C.faint}>{'·'.repeat(gm?.after ?? 0) + ' '}</Text>
+                  {clock(`lane-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
+                </Box>
+              )
+            })}
+          </Box>
+        )
+      }
+      const shown = cards.slice(-fit)
+      const cardW = Math.max(20, Math.floor((w - (shown.length - 1)) / shown.length))
+      const centers = shown.map((_, i) => i * (cardW + 1) + Math.floor(cardW / 2))
+      return (
+        <Box flexDirection="column" width={w}>
+          {header}
+          {rail('fan-out', running.length > 0, C.agent, w, centers)}
+          <Box columnGap={1}>
+            {shown.map((c, i) => {
+              const isViewed = viewed === c.id
+              const sameModel = !c.model || prettyModel(c.model) === modelName
+              return (
+                <Box
+                  flexDirection="column"
+                  borderStyle={isViewed ? 'double' : 'round'}
+                  borderColor={c.lastStop === 'max_tokens' ? C.warn : C.agent}
+                  borderDimColor={c.status !== 'running' && !isViewed}
+                  width={cardW}
+                  paddingX={1}
+                >
+                  <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={expandOnPress(c.id)} />
+                  <Text bold wrap="truncate">
+                    {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
+                  </Text>
+                  <Text color={C.dim} wrap="truncate">
+                    {sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`}
+                  </Text>
+                  <Text dimColor wrap="truncate">
+                    {c.steps > 0 ? `ctx ${kTokens(c.ctx)} · 輸出 ${kTokens(c.out)} · ${c.steps} 步` : '啟動中…'}
+                  </Text>
+                  <Box>
+                    <Text color={c.lastStop === 'max_tokens' ? C.warn : statusColor(c)}>
+                      {cardW >= 26 ? `${glyph(c)} ${c.lastStop === 'max_tokens' ? 'max_tokens' : statusLabel(c.status)} ` : `${glyph(c)} `}
+                    </Text>
+                    <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
+                  </Box>
+                </Box>
+              )
+            })}
+          </Box>
+          {rail('merge', running.length > 0, C.agent, w, centers, true)}
+        </Box>
+      )
+    }
+
+    const expandedCard = cards.find(c => c.id === v.expanded)
+    const expandedPanel = (w: number) =>
+      expandedCard ? (
+        <Box flexDirection="column" borderStyle="single" borderColor={C.agent} paddingX={1} width={w}>
+          <Text bold wrap="wrap">
+            {expandedCard.description || expandedCard.type}
+          </Text>
+          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${statusLabel(expandedCard.status)} · ${expandedCard.steps} 步`}</Text>
+          {expandedCard.tools.length === 0 ? <Text color={C.faint}>尚無工具呼叫</Text> : null}
+          {expandedCard.tools.map(n => (
+            <Text color={n.isError ? C.warn : C.text} wrap="truncate">
+              {`${n.isError ? '✗' : '·'} ${n.text}`}
+            </Text>
+          ))}
+          {expandedCard.answer ? (
+            <Text dimColor wrap="wrap">
+              {`» ${shorten(expandedCard.answer, 240)}`}
+            </Text>
+          ) : null}
+        </Box>
+      ) : null
+
+    // ---- other loops (workflow agents, forks): ids that match no card
+    const loopsPanel = (w: number) => {
+      if (lp.length === 0) return null
+      const active = lp.filter(l => isLoopActive(l, now)).length
+      const dots = lp.slice(-Math.max(4, w - 38))
+      return (
+        <Box width={w}>
+          <Text bold>其他迴圈 </Text>
+          <Text dimColor>{`${lp.length} 個 · ${active} 進行中  `}</Text>
+          {dots.map(l => (
+            <Text color={isLoopActive(l, now) ? C.agent : l.isDone ? C.dim : C.faint}>{isLoopActive(l, now) ? '●' : l.isDone ? '✓' : '○'}</Text>
+          ))}
+        </Box>
+      )
+    }
+
+    // ---- receipt: the turn now, or the last one
+    const receiptPanel = (w: number) => {
+      const isReview = t.isReviewing
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor={C.main} borderDimColor={!m.isRunning && !isReview} paddingX={1} width={w}>
+          {m.isRunning ? (
+            <Box>
+              <Text color={C.main} wrap="truncate">{`◐ 回到 ${modelName} · 本回合 `}</Text>
+              <Box flexShrink={0}>{clock('turn-clock', t.startedAt, null, C.main)}</Box>
+              {w >= 60 ? <Text dimColor wrap="truncate">{` · 編輯 ${t.edits} · 錯誤 ${t.errors}`}</Text> : null}
+            </Box>
+          ) : r ? (
+            <Text wrap="truncate">
+              <Text color={r.reason === 'answer' ? C.gate : C.warn}>{r.reason === 'answer' ? '✓ ' : '✗ '}</Text>
+              <Text>{receiptText(r)}</Text>
+              {r.costDelta !== null ? <Text color={C.main}>{` · +${fmtUsd(r.costDelta)}`}</Text> : null}
+            </Text>
+          ) : (
+            <Text color={C.faint}>尚無完成的回合</Text>
+          )}
+          {isReview ? <Text color={C.arch}>{`${cfg.architectLabel.toLowerCase()} 完成前審查中（推測）`}</Text> : null}
+        </Box>
+      )
+    }
+
+    // ---- Codex usage: percent used per window, as the main box shows Claude's
+    const codexWindow = (label: string, wd: UsageWindow | undefined, w: number) => {
+      const wv = windowView(wd, now)
+      if (wv === null) return <Text dimColor>{`${label} —   `}</Text>
+      const cg = gauge(wv.pct, 5)
+      const tail = wv.isStale ? ' 過期' : w >= 56 && wv.resetIn ? ` ↻${wv.resetIn}` : ''
+      return (
+        <Text wrap="truncate">
+          <Text dimColor>{`${label} `}</Text>
+          <Text color={wv.isStale ? C.dim : wv.pct >= 80 ? C.warn : C.codex}>{cg.on}</Text>
+          <Text color={C.faint}>{cg.off}</Text>
+          <Text dimColor>{` ${wv.isStale ? '~' : ''}${wv.pct}%${tail}  `}</Text>
+        </Text>
+      )
+    }
+    const codexPanel = (w: number) =>
+      cx ? (
+        <Box flexDirection="column" borderStyle="round" borderColor={C.codex} paddingX={1} width={w}>
+          <Box justifyContent="space-between">
+            <Text color={C.codex} bold wrap="truncate">
+              {plain(`Codex · ${cx.model ?? '—'}${cx.effort ? ` · ${cx.effort}` : ''}`)}
+            </Text>
+            <Box flexShrink={0}>
+              <Text dimColor>額度 · 已用</Text>
+            </Box>
+          </Box>
+          <Text wrap="truncate">
+            {codexWindow('5小時', cx.fiveHour, w)}
+            {codexWindow('每週', cx.weekly, w)}
+          </Text>
+          {cx.note ? (
+            <Text dimColor wrap="truncate">
+              {plain(cx.note)}
+            </Text>
+          ) : null}
+        </Box>
+      ) : null
+
+    // ---- branch: how many changed files no review has seen, and how many changed
+    const gitPanel = (w: number) => {
+      if (!gs) return null
+      const { paths, hidden } = pathLines(gs, v.gitOpen ? GIT_PATH_ROWS : 0)
+      const unreviewedColor = gs.unreviewed === undefined ? C.amber : gs.unreviewed === 0 ? C.gate : C.warn
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor={C.branch} paddingX={1} width={w}>
+          <Box justifyContent="space-between" columnGap={1}>
+            <Text color={C.branch} bold wrap="truncate">{`分支 · ${gs.branch}`}</Text>
+            <Box flexShrink={0}>
+              <Text dimColor>{syncLabel(gs)}</Text>
+            </Box>
+          </Box>
+          <Text wrap="truncate">
+            <Text color={unreviewedColor} bold>
+              {unreviewedLabel(gs)}
+            </Text>
+            <Text color={C.dim}> · </Text>
+            <Text color={gs.changed > 0 ? C.text : C.dim}>{changedLabel(gs)}</Text>
+          </Text>
+          {canUnfold(gs) ? (
+            <Button
+              key="git-unreviewed"
+              plain
+              hotkey="u"
+              label={`${v.gitOpen ? '▾' : '▸'} 未審清單`}
+              onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gitOpen: !normalize(DEFAULT_VIEW, x).gitOpen }))}
+            />
+          ) : null}
+          {paths.map(path => (
+            <Box paddingLeft={2}>
+              <Text dimColor wrap="truncate-start">
+                {path}
+              </Text>
+            </Box>
+          ))}
+          {hidden > 0 ? <Text dimColor>{`  … 另有 ${hidden} 個`}</Text> : null}
+        </Box>
+      )
+    }
+
+    // ---- log: whatever rows the other panels leave, 4 to 8
+    // The main box's speed line and the gap above the log are a row each.
+    const codexRows = cx ? 4 + (cx.note ? 1 : 0) : 0
+    const gitRows = gs ? 4 + (canUnfold(gs) ? 1 : 0) + pathRows(gs, v.gitOpen) : 0
+    const used = 2 + 5 + (m.speed ? 1 : 0) + 1 + codexRows + gitRows + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
+    const nLog = logRows(bodyRows, used)
+    const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
+    const colorOf = (l: LogLine) =>
+      l.kind === 'error' ? C.warn : l.kind === 'consult' ? C.arch : l.who === 'main' ? C.main : l.who === 'gate' ? C.gate : l.who === 'you' ? C.text : C.agent
+    const logPanel = (w: number) => (
+      <Box flexDirection="column" borderStyle="round" borderColor={C.faint} paddingX={1} marginTop={1} width={w}>
+        <Text dimColor>{viewed ? '工作紀錄 · 此子代理' : '工作紀錄'}</Text>
+        {shownLines.length === 0 ? <Text color={C.faint}>尚無紀錄</Text> : null}
+        {shownLines.map(l => (
+          <Box>
+            <Box width={9} flexShrink={0}>
+              <Text color={C.faint}>{fmtClock(l.at)}</Text>
+            </Box>
+            <Box width={13} flexShrink={0}>
+              <Text color={colorOf(l)} bold wrap="truncate">
+                {whoLabel(l.who)}
+              </Text>
+            </Box>
+            <Text color={l.kind === 'error' ? C.warn : C.text} wrap="truncate">
+              {l.text}
+            </Text>
+          </Box>
+        ))}
+      </Box>
+    )
+
+    const draw = (p: Panel, w: number) =>
+      p === 'main'
+        ? mainPanel(w)
+        : p === 'codex'
+          ? codexPanel(w)
+          : p === 'git'
+            ? gitPanel(w)
+            : p === 'architect'
+          ? architectPanel(w)
+          : p === 'gate'
+            ? gatePanel(w)
+            : p === 'agents'
+              ? agentsPanel(w)
+              : p === 'loops'
+                ? loopsPanel(w)
+                : p === 'receipt'
+                  ? receiptPanel(w)
+                  : logPanel(w)
+
+    // Panels with the flow between them; the agents panel draws its own rails.
+    const column = (ps: Panel[], w: number) => (
+      <Box flexDirection="column" width={w}>
+        {ps.map((p, i) => {
+          const prev = ps[i - 1]
+          const link =
+            i === 0 || p === 'codex' || p === 'git' || p === 'agents' || prev === 'agents' || p === 'log' || p === 'loops' || prev === 'loops'
+              ? null
+              : rail(`link-${p}`, p === 'architect' ? advising : m.isRunning, p === 'architect' ? C.arch : C.main, w)
+          return (
+            <Box flexDirection="column">
+              {link}
+              {draw(p, w)}
+              {p === 'agents' ? expandedPanel(w) : null}
+            </Box>
+          )
+        })}
+      </Box>
+    )
+
+    // Desktop draws the agents' time axis as SVG under the panels.
+    const svgLanes =
+      e.surface !== 'terminal' && cards.length > 0
+        ? (() => {
+            const { Svg } = $.ui.resolve(e)
+            const rowH = 18
+            const pxW = 520
+            const geo = lanes(cards.slice(-10), now, 100)
+            const rects = cards
+              .slice(-10)
+              .map((c, i) => {
+                const gm = geo[i]
+                const x = 150 + ((gm?.before ?? 0) / 100) * (pxW - 160)
+                const wpx = Math.max(3, ((gm?.bar ?? 1) / 100) * (pxW - 160))
+                const fill = c.status === 'running' ? SVG_COLORS.running : c.status === 'done' ? SVG_COLORS.done : c.status === 'failed' ? SVG_COLORS.failed : SVG_COLORS.other
+                const label = shorten(cardTitle(c), 22).replace(/[<&>]/g, '')
+                return `<text x="4" y="${i * rowH + 13}" font-size="11" fill="${SVG_COLORS.label}">${label}</text><rect x="${x}" y="${i * rowH + 4}" width="${wpx}" height="10" rx="3" fill="${fill}"/>`
+              })
+              .join('')
+            const svgH = Math.min(10, cards.length) * rowH + 4
+            return (
+              <Svg
+                source={`<svg xmlns="http://www.w3.org/2000/svg" width="${pxW}" height="${svgH}" viewBox="0 0 ${pxW} ${svgH}">${rects}</svg>`}
+                alt={`${cards.length} 個子代理的時間軸`}
+                width={pxW}
+                height={svgH}
+              />
+            )
+          })()
+        : null
+
+    // Inline above the prompt (the terminal's main screen), the pane is a summary of at most 8 rows.
+    const isMini = layout === 'mini' || (layout === 'auto' && e.props.placement === 'inline')
+    if (isMini) {
+      // Codex and the branch share one row; while it shows, one agent row fewer keeps the summary at 8.
+      const vitals = [
+        cx ? `Codex ${windowShort('5小時', cx.fiveHour, now)} · ${windowShort('每週', cx.weekly, now)}` : null,
+        gs ? `⎇ ${gs.branch} ${unreviewedLabel(gs)} · ${changedLabel(gs)}` : null,
+      ].filter(Boolean)
+      const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, vitals.length > 0 ? 2 : 3)
+      const counts = ` ${s.rule} 允許 · ${s.cleared} ${decider}${s.ask > 0 ? ` · ${s.ask} 待決` : ''} · ${s.deny} 拒絕`
+      const strip = g.recent.slice(-Math.max(4, W - cells(cfg.gateLabel) - 1 - cells(counts)))
+      const mg = u.pct !== null ? gauge(u.pct, 6) : null
+      return (
+        <Box flexDirection="column" width={W}>
+          <Text wrap="truncate">
+            <Text color={C.main} bold>
+              {modelName}
+            </Text>
+            <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? ' ● 工作中' : ' ○ 閒置'}</Text>
+            {mg ? <Text dimColor> · 上下文 </Text> : null}
+            {mg ? <Text color={(u.pct ?? 0) >= 80 ? C.warn : C.main}>{mg.on}</Text> : null}
+            {mg ? <Text color={C.faint}>{mg.off}</Text> : null}
+            {mg ? <Text>{` ${Math.round(u.pct ?? 0)}%`}</Text> : null}
+            {u.compactions > 0 ? <Text color={C.amber}>{` ⟲${u.compactions}`}</Text> : null}
+            {u.costUsd !== null ? <Text dimColor>{` · ${fmtUsd(u.costUsd)}`}</Text> : null}
+            {showArchitect ? <Text color={C.arch}>{` · ${cfg.architectLabel.toLowerCase()} ${advising ? '諮詢中' : a.consults.length}`}</Text> : null}
+          </Text>
+          {vitals.length > 0 ? (
+            <Text color={C.dim} wrap="truncate">
+              {vitals.join('   ')}
+            </Text>
+          ) : null}
+          {strip.length > 0 ? (
+            <Box>
+              <Text dimColor>{`${cfg.gateLabel.toLowerCase()} `}</Text>
+              {strip.map(c => (
+                <Text color={verdictColor(c)} dimColor={c.inSubagent}>
+                  {c.verdict === 'deny' ? '✗' : '■'}
+                </Text>
+              ))}
+              <Text color={s.deny > 0 ? C.warn : s.ask > 0 ? C.amber : C.dim} wrap="truncate">
+                {counts}
+              </Text>
+            </Box>
+          ) : null}
+          {live.map(c => (
+            <Box>
+              <Text color={statusColor(c)}>{`${glyph(c)} `}</Text>
+              <Box width={Math.max(10, W - 30)}>
+                <Text wrap="truncate">{cardTitle(c)}</Text>
+              </Box>
+              <Text dimColor>{c.steps > 0 ? ` ctx ${kTokens(c.ctx)} ` : ' '}</Text>
+              {clock(`mini-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
+            </Box>
+          ))}
+          {cards.length > live.length ? (
+            <Text color={C.faint} wrap="truncate">{`+${cards.length - live.length} 個子代理 · /dashboard layout compact 看全部`}</Text>
+          ) : null}
+          {lp.length > 0 ? <Text dimColor>{`其他迴圈 ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} 進行中`}</Text> : null}
+          {!m.isRunning && r ? (
+            <Text dimColor wrap="truncate">
+              {`${receiptText(r)}${r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''}`}
+            </Text>
+          ) : null}
+        </Box>
+      )
+    }
+
+    const legend = fitLegend(
+      [
+        { label: '主模型', color: C.main },
+        { label: '子代理', color: C.agent },
+        { label: cfg.gateLabel.toLowerCase(), color: C.gate },
+        ...(showArchitect ? [{ label: cfg.architectLabel.toLowerCase(), color: C.arch }] : []),
+        ...(panels.includes('codex') ? [{ label: 'Codex', color: C.codex }] : []),
+        ...(panels.includes('git') ? [{ label: '分支', color: C.branch }] : []),
+      ],
+      W,
+    )
+
+    const body = isWide ? (
+      <Box flexDirection="column">
+        <Box columnGap={2}>
+          {column(panels.filter(p => p === 'main' || p === 'codex' || p === 'architect' || p === 'gate'), colW)}
+          {column(panels.filter(p => p === 'git' || p === 'agents' || p === 'loops' || p === 'receipt'), colW)}
+        </Box>
+        {panels.includes('log') ? logPanel(W) : null}
+      </Box>
+    ) : (
+      column(panels, W)
+    )
+
+    return (
+      <Box flexDirection="column" width={W}>
+        <Box justifyContent="center">
+          <Text bold wrap="truncate">
+            <Text>CC DASHBOARD</Text>
+            <Text color={C.dim}> · </Text>
+            <Text color={C.main}>{modelName.toUpperCase()}</Text>
+            <Text>{m.isRunning ? ' 工作中' : ' 閒置'}</Text>
+            {showArchitect ? <Text color={C.dim}> · </Text> : null}
+            {showArchitect ? <Text color={C.arch}>{cfg.architectLabel}</Text> : null}
+            {showArchitect ? <Text>{advising ? ' 諮詢中' : ' 待命'}</Text> : null}
+          </Text>
+        </Box>
+        <Box justifyContent="center" columnGap={2}>
+          {legend.map(l => (
+            <Text>
+              <Text color={l.color}>■</Text>
+              <Text dimColor>{` ${l.label}`}</Text>
+            </Text>
+          ))}
+        </Box>
+        {body}
+        {svgLanes}
+      </Box>
+    )
   })
 }
