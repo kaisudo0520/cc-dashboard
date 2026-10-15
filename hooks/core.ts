@@ -599,3 +599,36 @@ export const pathRows = (s: GitSnap, isOpen: boolean) => {
   const { paths, hidden } = pathLines(s, GIT_PATH_ROWS)
   return paths.length + (hidden > 0 ? 1 : 0)
 }
+
+// ---------------------------------------------------------------- Codex runs as cards
+
+/** A `codex exec` run the main session started, as a running card: no steps or tokens to tell. */
+export const codexCard = (id: string, call: { purpose: string; note?: string }, model: string, at: number): AgentCard => ({
+  ...normalizeCard({}),
+  id,
+  type: 'Codex',
+  model,
+  description: call.note ? `${call.purpose}：${call.note}` : call.purpose,
+  spawnedAt: at,
+  codex: {},
+})
+
+/** A card ended: done when it went well, failed otherwise. A card already ended stays as it ended. */
+export const endCard = (c: AgentCard, ok: boolean, at: number): AgentCard =>
+  c.status !== 'running' ? c : { ...c, status: ok ? 'done' : 'failed', endedAt: at }
+
+/**
+ * The Codex runs a turn's stop settles: a foreground run still open was abandoned (failed); a
+ * background run the engine no longer lists has finished (done). Unknown lists settle nothing
+ * in the background. Answers the ids it ended, with how.
+ */
+export const stopCodex = (cards: AgentCard[], liveIds: readonly string[] | undefined): { id: string; ok: boolean }[] =>
+  cards.flatMap(c => {
+    if (c.codex === undefined || c.status !== 'running') return []
+    if (c.codex.taskId === undefined) return [{ id: c.id, ok: false }]
+    return liveIds !== undefined && !liveIds.includes(c.codex.taskId) ? [{ id: c.id, ok: true }] : []
+  })
+
+/** The card a notification ends: by its background task id, else by the shell call that started it. */
+export const codexCardFor = (cards: AgentCard[], taskId: string, toolUseId: string | undefined) =>
+  cards.find(c => c.codex !== undefined && (c.codex.taskId === taskId || (toolUseId !== undefined && c.id === toolUseId)))

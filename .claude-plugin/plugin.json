@@ -1,7 +1,7 @@
 {
   "name": "cc-dashboard",
   "version": "0.2.0",
-  "description": "任務控制台：以 Flightdeck 為基礎，主模型、顧問、權限、子代理卡片與泳道、回合收據、工作紀錄，加上 Codex 額度與分支（未審／更新檔案數）。只顯示真實資料。",
+  "description": "任務控制台：以 Flightdeck 為基礎，主模型（含 Fable 週額度）、顧問、權限、子代理卡片與泳道（含 codex exec）、回合收據、工作紀錄，加上 Codex 額度、分支（未審／更新檔案數）與其他 session 等你回應的提醒。只顯示真實資料。",
   "author": {
     "name": "Kai Su"
   },

@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { canUnfold, changedLabel, pathLines, syncLabel, unreviewedLabel, windowShort, windowView } from '../hooks/core'
+import { canUnfold, changedLabel, codexCard, codexCardFor, endCard, pathLines, stopCodex, syncLabel, unreviewedLabel, windowShort, windowView } from '../hooks/core'
 import type { GitSnap } from '../types'
 
 // The panels cc-dashboard adds to Flightdeck: Codex's usage windows and the 分支 panel (how many
@@ -13,6 +13,7 @@ const HOUR_MS = 3_600_000
 const HOME = '/home/me'
 const SYSTEM_ROOT = 'C:\\Windows'
 const POWERSHELL = `${SYSTEM_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+const TASKLIST = `${SYSTEM_ROOT}\\System32\\tasklist.exe`
 const SESSIONS = `${HOME}/.codex/sessions`
 const ROLLOUT = `${SESSIONS}/2026/10/14/rollout-2026-10-14T10-00-00-abc.jsonl`
 const DIRS: Record<string, { name: string; kind: 'dir' | 'file' }[]> = {
@@ -48,6 +49,15 @@ type World = {
   processCalls: { argv: readonly string[]; rollout?: string }[]
   gitCalls: (readonly string[])[]
   toolResult: { result: unknown; isError?: true } | { deny: string }
+  /** Answers the shell tool gives while a test looks at the pane mid-call. */
+  onToolCall: () => Promise<void>
+  auth: { handle: string; kind: 'bearer' | 'api-key' } | null
+  fetchOk: boolean
+  fetchBody: string
+  fetchCalls: number
+  dirs: Record<string, { name: string; kind: 'dir' | 'file' }[]>
+  tasklist: string
+  writes: { path: string; text: string }[]
 }
 
 const engine = (on: On, world: Partial<World> = {}) => {
@@ -62,6 +72,14 @@ const engine = (on: On, world: Partial<World> = {}) => {
     processCalls: [],
     gitCalls: [],
     toolResult: { result: 'ok' },
+    onToolCall: async () => undefined,
+    auth: { handle: 'h1', kind: 'bearer' },
+    fetchOk: true,
+    fetchBody: '{"limits":[]}',
+    fetchCalls: 0,
+    dirs: {},
+    tasklist: '',
+    writes: [],
     ...world,
   }
   const clock = mock.clock(on, { now: NOW })
@@ -75,12 +93,29 @@ const engine = (on: On, world: Partial<World> = {}) => {
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
-  on('tool.call', () => w.toolResult as { result: string })
+  on('tool.call', async () => {
+    await w.onToolCall()
+    return w.toolResult as { result: string }
+  })
+  on('classic.PermissionRequest', () => ({}))
+  on('tool.check', () => ({ decision: 'ask' }))
+  on('classic.Stop', () => ({}))
+  on('session.id', () => ({ value: 'session-a' }))
+  on('session.authorize', () => ({ value: w.auth }))
+  on('http.fetch', () => {
+    w.fetchCalls += 1
+    return { value: { status: w.fetchOk ? 200 : 500, ok: w.fetchOk, headers: {}, text: w.fetchBody } }
+  })
+  on('fs.write', (_$, e) => {
+    w.writes.push({ path: e.path, text: e.text })
+    w.files[e.path] = e.text
+    return { value: undefined }
+  })
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('env.get', (_$, e) => ({ value: e.name === 'USERPROFILE' ? w.home : e.name === 'SystemRoot' ? w.systemRoot : undefined }))
   on('fs.list', (_$, e) => {
-    const names = DIRS[e.path.replaceAll('\\', '/')]
-    return names === undefined ? { deny: `no such directory: ${e.path}` } : { value: names.map(n => ({ ...n, size: 0, mtimeMs: 0, isLink: false })) }
+    const names = DIRS[e.path] ?? w.dirs[e.path]
+    return names === undefined ? { deny: `no such directory: ${e.path}` } : { value: names.map(n => ({ ...n, size: 100, mtimeMs: 0, isLink: false })) }
   })
   on('fs.read', (_$, e) => {
     const file = w.files[e.path.replaceAll('\\', '/')]
@@ -97,6 +132,7 @@ const engine = (on: On, world: Partial<World> = {}) => {
       if (e.argv.includes('status')) return done(w.git.status)
       return done(w.git.hash)
     }
+    if (e.argv[0] === TASKLIST) return done({ exitCode: 0, stdout: w.tasklist })
     w.processCalls.push({ argv: e.argv, rollout: e.init?.env?.ROLLOUT })
     return done({ exitCode: 0, stdout: w.rollout })
   })
@@ -299,4 +335,194 @@ test('Codex and git are polled only while the pane shows', async ($, on) => {
   await new Promise(done => setTimeout(done, 20))
   expect(w.gitCalls.length > 0).toBe(true)
   expect(w.processCalls.length > 0).toBe(true)
+})
+
+// ---------------------------------------------------------------- Fable
+
+const FABLE_BODY = JSON.stringify({
+  limits: [{ kind: 'weekly_scoped', scope: { model: { display_name: 'Fable' } }, percent: 12, resets_at: new Date(NOW + 2 * 24 * HOUR_MS + 3 * HOUR_MS).toISOString() }],
+})
+
+// The pane shows: the pump reads every source that is due.
+const showAndPump = async ($: Engine, w: World, clock: { advance: (ms: number) => Promise<void> }) => {
+  await $.session.start({ cwd: '/repo' } as never)
+  w.shown = true
+  await clock.advance(2_000)
+  await new Promise(done => setTimeout(done, 20))
+}
+
+test('Fable weekly usage shows in the main box, read through the engine\'s own authorization', async ($, on) => {
+  const { w, clock } = engine(on, { fetchBody: FABLE_BODY })
+  await showAndPump($, w, clock)
+  expect(w.fetchCalls).toBe(1)
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: /12% ↻2d2h/ })).toBeDefined()
+  expect(await ui.find({ text: 'Fable ' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a failed Fable refresh keeps the last figure, marked Fable~; without a bearer login nothing is asked', async ($, on) => {
+  const { w, clock } = engine(on, { fetchBody: FABLE_BODY })
+  await showAndPump($, w, clock)
+  w.fetchOk = false
+  await clock.advance(90_000)
+  await new Promise(done => setTimeout(done, 20))
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: 'Fable~ ' })).toBeDefined()
+  expect(await ui.find({ text: /12%/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an account with no bearer login never asks for Fable and shows no Fable row', async ($, on) => {
+  const { w, clock } = engine(on, { fetchBody: FABLE_BODY, auth: { handle: 'k', kind: 'api-key' } })
+  await showAndPump($, w, clock)
+  expect(w.fetchCalls).toBe(0)
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: /^Fable/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+// ---------------------------------------------------------------- waits on the person
+
+const REGISTRY = `${HOME}/.claude/sessions`
+const MARKS = `${HOME}/.claude/mods-state/status-sidebar/waiting`
+const registryFile = (pid: number, sessionId: string, name: string) => JSON.stringify({ pid, sessionId, name })
+const twoSessions = (marks: Record<string, string> = {}): Partial<World> => ({
+  dirs: { [REGISTRY]: [{ name: '11.json', kind: 'file' }, { name: '22.json', kind: 'file' }] },
+  files: { [`${REGISTRY}/11.json`]: registryFile(11, 'session-a', 'here'), [`${REGISTRY}/22.json`]: registryFile(22, 'session-b', 'jev-router-41'), ...marks },
+  tasklist: '"claude.exe","11","Console","1","5 K"\r\n"claude.exe","22","Console","1","5 K"\r\n',
+})
+const myMark = (w: World) => JSON.parse(w.files[`${MARKS}/11.json`] ?? 'null')
+
+test('another live session waiting on the person shows as one red line under the header', async ($, on) => {
+  const { w, clock } = engine(on, twoSessions({ [`${MARKS}/22.json`]: JSON.stringify({ sessionId: 'session-b', reason: 'permission', sinceMs: NOW - 3 * 60_000 }) }))
+  await showAndPump($, w, clock)
+  for (const [cols, placement] of [[64, 'dock'], [120, 'dock'], [110, 'inline']] as const) {
+    const ui = await $.ui.mount(props(cols, placement))
+    const line = await ui.find({ text: /^! 等你回應：jev-router-41 權限 3分前$/ })
+    expect(line?.props.color).toBe('error')
+    await ui.unmount()
+  }
+})
+
+test('a mark left by a reused pid, or no mark at all, shows no line', async ($, on) => {
+  const { w, clock } = engine(on, twoSessions({ [`${MARKS}/22.json`]: JSON.stringify({ sessionId: 'someone-else', reason: 'question', sinceMs: 0 }) }))
+  await showAndPump($, w, clock)
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: /等你回應/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('this session marks its own permission wait for the others, and clears it when the call returns', async ($, on) => {
+  const { w, clock } = engine(on, twoSessions())
+  await $.session.start({ cwd: '/repo' } as never)
+  await clock.advance(1)
+  await new Promise(done => setTimeout(done, 20))
+  expect(myMark(w)).toEqual({ sessionId: 'session-a', reason: null, sinceMs: 0 })
+  await $.tool.check({ tool: 'Bash', input: { command: 'git push' }, tool_use_id: 'p1' })
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'git push' } } as never)
+  await new Promise(done => setTimeout(done, 20))
+  expect(myMark(w)?.reason).toBe('permission')
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'p1', command: 'git push' } as never)
+  await new Promise(done => setTimeout(done, 20))
+  expect(myMark(w)?.reason).toBe(null)
+})
+
+test('a question to the person is a wait until the person answers', async ($, on) => {
+  const { w, clock } = engine(on, twoSessions())
+  await $.session.start({ cwd: '/repo' } as never)
+  await clock.advance(1)
+  let during: unknown = null
+  w.onToolCall = async () => {
+    await new Promise(done => setTimeout(done, 20))
+    during = myMark(w)?.reason
+  }
+  await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'q1', questions: [] } as never)
+  await new Promise(done => setTimeout(done, 20))
+  expect(during).toBe('question')
+  expect(myMark(w)?.reason).toBe(null)
+})
+
+// ---------------------------------------------------------------- Codex runs as subagents
+
+const PLAN = 'codex exec --sandbox read-only -m gpt-6-sol - < brief.md'
+const SHELL_OUT = { stdout: '', stderr: '', interrupted: false }
+const notify = ($: Engine, taskId: string, status = 'completed', exit = 0) =>
+  $.prompt.submit({
+    text: `<task-notification><task-id>${taskId}</task-id><tool-use-id>c1</tool-use-id><status>${status}</status><summary>Background command "codex exec" ${status} (exit code ${exit})</summary></task-notification>`,
+    wait: false,
+    origin: { kind: 'task-notification' },
+  } as never)
+
+test('the Codex helpers: a run is a card, ended once, settled at a stop, found by task or call id', () => {
+  const card = codexCard('c1', { purpose: 'Codex 規劃草稿', note: '寫計畫' }, 'gpt-6-sol', 5)
+  expect([card.type, card.description, card.status, card.spawnedAt]).toEqual(['Codex', 'Codex 規劃草稿：寫計畫', 'running', 5])
+  const done = endCard(card, true, 9)
+  expect([done.status, done.endedAt]).toEqual(['done', 9])
+  expect(endCard(done, false, 20)).toBe(done)
+  const bg = { ...codexCard('c2', { purpose: 'Codex' }, '', 1), codex: { taskId: 'b2' } }
+  expect(stopCodex([card, bg], ['b2'])).toEqual([{ id: 'c1', ok: false }])
+  expect(stopCodex([card, bg], [])).toEqual([{ id: 'c1', ok: false }, { id: 'c2', ok: true }])
+  expect(stopCodex([bg], undefined)).toEqual([])
+  expect(codexCardFor([card, bg], 'b2', undefined)?.id).toBe('c2')
+  expect(codexCardFor([card, bg], 'zz', 'c1')?.id).toBe('c1')
+})
+
+test('a codex exec is a running subagent card while its call runs, then done, with no session id', async ($, on) => {
+  const { w } = engine(on, { toolResult: { result: SHELL_OUT } })
+  let during: { running?: unknown; title?: unknown } = {}
+  w.onToolCall = async () => {
+    const ui = await $.ui.mount(props(64))
+    during = { running: await ui.find({ text: /子代理 · 1 執行中/ }), title: await ui.find({ text: /Codex 規劃草稿/ }) }
+    await ui.unmount()
+  }
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN, description: '寫計畫' } as never)
+  expect(during.running).toBeDefined()
+  expect(during.title).toBeDefined()
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: /子代理 · 0 執行中 · 共 1/ })).toBeDefined()
+  expect(await ui.find({ text: /✓ 完成/ })).toBeDefined()
+  expect(await ui.find({ text: 'codex exec' })).toBeDefined()
+  expect(await ui.find({ text: /[0-9a-f]{8}-[0-9a-f]{4}-/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a codex exec that fails is a failed card; a mention of codex exec is no card', async ($, on) => {
+  const { w } = engine(on, { toolResult: { result: SHELL_OUT, isError: true } })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN } as never)
+  w.toolResult = { result: SHELL_OUT }
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'c2', command: 'echo "codex exec"' } as never)
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: /共 1/ })).toBeDefined()
+  expect(await ui.find({ text: /✗ 失敗/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a codex exec moved to the background keeps running until its notification ends it', async ($, on) => {
+  const { w } = engine(on, { toolResult: { result: { ...SHELL_OUT, backgroundTaskId: 'b1' } } })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN, run_in_background: true } as never)
+  const mid = await $.ui.mount(props(64))
+  expect(await mid.find({ text: /1 執行中/ })).toBeDefined()
+  await mid.unmount()
+  await notify($, 'b1', 'failed', 1)
+  const after = await $.ui.mount(props(64))
+  expect(await after.find({ text: /0 執行中/ })).toBeDefined()
+  expect(await after.find({ text: /✗ 失敗/ })).toBeDefined()
+  await after.unmount()
+  void w
+})
+
+test('at a stop, a background run the engine no longer lists is done; one it lists keeps running', async ($, on) => {
+  engine(on, { toolResult: { result: { ...SHELL_OUT, backgroundTaskId: 'b1' } } })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN } as never)
+  const stop = (ids: string[]) =>
+    $.classic.Stop({ stop_hook_active: false, background_tasks: ids.map(id => ({ id, type: 'shell', status: 'running', description: 'codex exec' })) } as never)
+  await stop(['b1'])
+  const still = await $.ui.mount(props(64))
+  expect(await still.find({ text: /1 執行中/ })).toBeDefined()
+  await still.unmount()
+  await stop([])
+  const done = await $.ui.mount(props(64))
+  expect(await done.find({ text: /✓ 完成/ })).toBeDefined()
+  await done.unmount()
 })

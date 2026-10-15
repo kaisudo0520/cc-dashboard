@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AgentCard, Architect, Bucket, Check, CodexQuota, Gate, GitSnap, Layout, LogLine, Loop, Main, Roster, Turn, Usage, UsageWindow, View } from '../types'
+import type { AgentCard, Architect, Bucket, Check, CodexQuota, Gate, GitSnap, Layout, LogLine, Loop, Main, Roster, Turn, Usage, UsageWindow, View, WaitReason, WaitingRow } from '../types'
 import {
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
@@ -38,6 +38,10 @@ import {
   cells,
   pathLines,
   pathRows,
+  codexCard,
+  codexCardFor,
+  endCard,
+  stopCodex,
   gateSummary,
   gauge,
   isAdvising,
@@ -72,14 +76,20 @@ import {
   stepLoop,
 } from './core'
 import type { Config, Panel } from './core'
+import { describeCodex } from './lib/codex'
 import { ROLLOUT_QUERY, readCodexQuota } from './lib/codex-quota'
+import { FABLE_POLL_MS, fableFromUsage, nextFableDelay } from './lib/fable'
+import { backgroundIdOf, parseNotifications } from './lib/notify'
+import { serial } from './lib/serial'
+import { readLiveSessions } from './lib/sessions'
+import { bannerText, isQuestionTool, markPath, markText, readWaits, sameWaits } from './lib/waiting'
 import { isPersonPrompt, isReviewCall, isReviewPrompt, snapOf } from './lib/git'
 import { GIT_TIMEOUT_MS, readTree } from './lib/git-tree'
 import type { GitRun, Inspect, Tree } from './lib/git-tree'
 import { plain } from './lib/plain'
 import { readReviewed, recordReviewed } from './lib/review-store'
 import type { ReviewStore } from './lib/review-store'
-import { powershellExe } from './lib/system'
+import { powershellExe, tasklistExe } from './lib/system'
 
 const PANE = 'dashboard'
 const TITLE = 'Dashboard'
@@ -102,6 +112,10 @@ const view = atom({ plugin: 'cc-dashboard', key: 'view' } as const, DEFAULT_VIEW
 const roster = atom({ plugin: 'cc-dashboard', key: 'roster' } as const, DEFAULT_ROSTER)
 const codex = atom({ plugin: 'cc-dashboard', key: 'codex' } as const, null)
 const git = atom({ plugin: 'cc-dashboard', key: 'git' } as const, null)
+const fable = atom({ plugin: 'cc-dashboard', key: 'fable' } as const, null)
+const waiting = atom({ plugin: 'cc-dashboard', key: 'waiting' } as const, null)
+const sessions = atom({ plugin: 'cc-dashboard', key: 'sessions' } as const, [])
+const waitingOthers = atom({ plugin: 'cc-dashboard', key: 'waitingOthers' } as const, [])
 
 const swallow = (): void => undefined
 
@@ -303,13 +317,174 @@ async function recordReview($: EngineInterface, tree: Tree | undefined) {
   await update($, git, () => snapOf(tree.status, tree.hashes, kept))
 }
 
-// ---------------------------------------------------------------- polling
-// Codex and git are read on their own schedules, and only while the pane is showing: a pane nobody
-// sees costs no process. One pump looks every 2 seconds and starts whichever is due and not running.
+// ---------------------------------------------------------------- Fable
+// Fable's weekly window is not in the session's rate limits: it comes from /api/oauth/usage. The
+// request is authorised by the engine's own handle (the credential never reaches this plugin), and
+// only a bearer login can use that endpoint. A failed answer keeps the last figure and marks it
+// stale. Answers how long to wait before asking again: 90 seconds, doubled after a failure up to
+// ten minutes, or as long as the server asks in `retry-after`.
 
-type Source = 'codex' | 'git'
-const EVERY: Record<Source, number> = { codex: 120_000, git: 30_000 }
-const dueAt: Record<Source, number> = { codex: 0, git: 0 }
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+let fableDelayMs = FABLE_POLL_MS
+
+async function refreshFable($: EngineInterface): Promise<number> {
+  const auth = await $.session.authorize().catch(() => null)
+  const response =
+    auth === null || auth.kind !== 'bearer'
+      ? undefined
+      : await $.http
+          .fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20', 'Content-Type': 'application/json' } })
+          .catch(() => undefined)
+  const window = response?.ok === true ? fableFromUsage(response.text) : undefined
+  await update($, fable, old =>
+    window !== undefined ? { window, isStale: false } : old?.window === undefined ? { isStale: false } : { window: old.window, isStale: true },
+  )
+  fableDelayMs = nextFableDelay(fableDelayMs, response?.ok === true, response?.headers['retry-after'])
+  return fableDelayMs
+}
+
+// ---------------------------------------------------------------- waits on the person
+// A session that waits on the person (a permission dialog, a question, a plan to approve) says so
+// in a small mark file named by its pid, in the folder and format status-sidebar uses, so sessions
+// running either mod see each other. Writing this session's own mark follows its events, whether
+// or not the pane shows; reading the others' (and the registry and process table that say which
+// marks to trust) only serves the banner, so it waits for the pane to show.
+
+let herePid: number | undefined
+let pidLookup: Promise<void> | undefined
+let sessionsAt = 0
+// Calls whose permission is put to the decider, so a dialog's wait ends with its own call.
+const asked = new Set<string>()
+
+// The live sessions: the registry in ~/.claude/sessions, kept to the pids still running as Claude
+// Code. A registry or process table that cannot be read leaves no sessions, and so no banner.
+async function refreshSessions($: EngineInterface) {
+  try {
+    const home = await $.env.get('USERPROFILE')
+    if (home === undefined) throw new Error('USERPROFILE is not set')
+    const root = await $.env.get('SystemRoot')
+    if (root === undefined) throw new Error('SystemRoot is not set')
+    const rows = await readLiveSessions(home, await $.session.id(), {
+      list: dir => $.fs.list(dir),
+      read: path => $.fs.read(path).catch(() => ''),
+      tasklist: () => $.process.run([tasklistExe(root), '/FO', 'CSV', '/NH'], { timeoutMs: 15_000 }),
+    })
+    herePid = rows.find(row => row.isHere)?.pid ?? herePid
+    await update($, sessions, () => rows)
+  } catch (error) {
+    await update($, sessions, () => [])
+    throw error
+  }
+}
+
+function learnPid($: EngineInterface): Promise<void> {
+  pidLookup ??= refreshSessions($)
+    .catch(swallow)
+    .finally(() => {
+      pidLookup = undefined
+    })
+  return pidLookup
+}
+
+// What the mark says is the wait as it stands when the write begins. Until the pid is known nothing
+// waits for it, so a dialog is never held up on it.
+async function putMark($: EngineInterface) {
+  if (herePid === undefined) {
+    void learnPid($)
+      .then(() => (herePid === undefined ? undefined : writeMark($)))
+      .catch(swallow)
+    return
+  }
+  const home = await $.env.get('USERPROFILE')
+  if (home === undefined) return
+  const value = await read($, waiting)
+  await $.fs.write(markPath(home, herePid), markText(await $.session.id(), value?.reason ?? null, value?.sinceMs ?? 0))
+}
+
+// The writes go one after another, so a slow one never lands after a newer one.
+const inMarkOrder = serial()
+function writeMark($: EngineInterface): Promise<void> {
+  return inMarkOrder(() => putMark($))
+}
+
+async function setWaiting($: EngineInterface, reason: WaitReason | null) {
+  if (((await read($, waiting))?.reason ?? null) === reason) return
+  const value = reason === null ? null : { reason, sinceMs: await $.clock.now() }
+  await update($, waiting, () => value)
+  await writeMark($)
+}
+
+// A new prompt, the turn ending, or the session ending means whatever was asked is over.
+async function endWaiting($: EngineInterface) {
+  asked.clear()
+  await setWaiting($, null)
+}
+
+// A call that returned has had its question answered or its dialog closed. A permission wait ends
+// once no call put to the decider is still pending.
+async function settleWait($: EngineInterface, tool: string, toolUseId: string | undefined) {
+  if (toolUseId !== undefined) asked.delete(toolUseId)
+  const now = (await read($, waiting))?.reason
+  if ((now === 'question' && isQuestionTool(tool)) || (now === 'permission' && asked.size === 0)) await setWaiting($, null)
+}
+
+// The same waits as the last read change nothing: no write, no redraw.
+async function noteOthers($: EngineInterface, rows: WaitingRow[]) {
+  if (sameWaits(await read($, waitingOthers), rows)) return
+  await update($, waitingOthers, () => rows)
+}
+
+// The other live sessions that wait on the person: each one's mark, if the session id inside it is
+// the one the registry names. Whatever cannot be read leaves no banner: nothing is guessed.
+async function readOthers($: EngineInterface): Promise<number> {
+  try {
+    const now = await $.clock.now()
+    if (now - sessionsAt >= 30_000) {
+      sessionsAt = now
+      await refreshSessions($)
+    }
+    const home = await $.env.get('USERPROFILE')
+    await noteOthers($, home === undefined ? [] : await readWaits(home, await read($, sessions), path => $.fs.read(path).catch(() => '')))
+  } catch {
+    await noteOthers($, [])
+  }
+  return 5_000
+}
+
+// ---------------------------------------------------------------- Codex runs as subagents
+// A `codex exec` the main session starts through Bash or PowerShell is drawn as a subagent card:
+// running from the call's start, ended by its result, by a background task's notification, or
+// (inferred) by the turn's stop. No Codex session id is read.
+
+async function codexStarted($: EngineInterface, id: string, call: { purpose: string; note?: string }) {
+  const card = codexCard(id, call, (await read($, codex))?.model ?? '', await $.clock.now())
+  await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
+  await say($, shorten(cardTitle(card), 12), '啟動 · Codex', 'info', id)
+}
+
+async function codexEnded($: EngineInterface, id: string, ok: boolean) {
+  const card = (await getCards($)).find(c => c.id === id)
+  if (card?.codex === undefined || card.status !== 'running') return
+  const now = await $.clock.now()
+  await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? endCard(c, ok, now) : c)))
+  await say($, await whoIs($, id), ok ? `完成 · ${fmtDuration(now - card.spawnedAt)}` : '失敗', ok ? 'done' : 'error', id)
+}
+
+// The call's result: the run moved to the background (kept running, under its task id), or is over.
+async function codexSettled($: EngineInterface, id: string, ran: { deny?: string; isError?: boolean; result?: unknown }) {
+  const taskId = ran.deny === undefined ? backgroundIdOf(ran.result) : undefined
+  if (taskId === undefined) return codexEnded($, id, ran.deny === undefined && ran.isError !== true)
+  await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id && c.codex ? { ...c, codex: { taskId } } : c)))
+}
+
+// ---------------------------------------------------------------- polling
+// Fable, Codex, git and the other sessions' waits are read on their own schedules, and only while
+// the pane is showing: a pane nobody sees costs no request and no process. One pump looks every 2
+// seconds and starts whichever is due and not already running.
+
+type Source = 'fable' | 'codex' | 'git' | 'others'
+const SOURCES: readonly Source[] = ['fable', 'codex', 'git', 'others']
+const dueAt: Record<Source, number> = { fable: 0, codex: 0, git: 0, others: 0 }
 const busy = new Set<Source>()
 let pump: Timer | undefined
 
@@ -317,12 +492,33 @@ async function isPaneShown($: EngineInterface) {
   return (await $.ui.panes()).some(p => p.id === PANE && p.isShown)
 }
 
+// Each source reads, then answers how long to wait before it is read again.
+async function readSource($: EngineInterface, source: Source): Promise<number> {
+  switch (source) {
+    case 'fable':
+      return refreshFable($)
+    case 'codex':
+      await refreshCodex($)
+      return 120_000
+    case 'git':
+      await refreshGit($)
+      return 30_000
+    case 'others':
+      return readOthers($)
+  }
+}
+
+// A read that throws is tried again after the usual wait, or for Fable after its next backoff.
+function failureWait(source: Source) {
+  if (source === 'fable') return (fableDelayMs = nextFableDelay(fableDelayMs, false, undefined))
+  return source === 'codex' ? 120_000 : source === 'git' ? 30_000 : 5_000
+}
+
 async function runSource($: EngineInterface, source: Source) {
   busy.add(source)
   try {
-    if (source === 'codex') await refreshCodex($).catch(swallow)
-    else await refreshGit($).catch(swallow)
-    dueAt[source] = (await $.clock.now()) + EVERY[source]
+    const wait = await readSource($, source).catch(() => failureWait(source))
+    dueAt[source] = (await $.clock.now()) + wait
   } finally {
     busy.delete(source)
   }
@@ -331,7 +527,7 @@ async function runSource($: EngineInterface, source: Source) {
 async function pumpPolls($: EngineInterface) {
   if (!(await isPaneShown($).catch(() => false))) return
   const now = await $.clock.now()
-  for (const source of ['codex', 'git'] as const) {
+  for (const source of SOURCES) {
     if (!busy.has(source) && dueAt[source] <= now) void runSource($, source).catch(swallow)
   }
 }
@@ -373,6 +569,8 @@ export const register: Register = (on, options) => {
     await refreshStatus($, cfg)
     startPolling($)
     void pumpPolls($).catch(swallow)
+    // A fresh load writes the wait as it stands: none on a start, the open one when a reload lands while a dialog is up.
+    void writeMark($).catch(swallow)
     return next(e)
   })
 
@@ -381,6 +579,7 @@ export const register: Register = (on, options) => {
       await resetAll($)
       await refreshStatus($, cfg)
     }
+    await endWaiting($).catch(swallow)
     return next(e)
   })
 
@@ -396,9 +595,10 @@ export const register: Register = (on, options) => {
       return { text: 'Dashboard 已重設。' }
     }
     if (verb === 'refresh') {
-      // Read now, whether or not the pane shows; the schedules start over from here.
-      await Promise.all((['codex', 'git'] as const).filter(src => !busy.has(src)).map(src => runSource($, src)))
-      return { text: 'Codex 額度與分支已重新讀取。' }
+      // Read now, whether or not the pane shows; the schedules start over from here. Fable keeps its own.
+      sessionsAt = 0
+      await Promise.all((['codex', 'git', 'others'] as const).filter(src => !busy.has(src)).map(src => runSource($, src)))
+      return { text: 'Codex 額度、分支與其他 session 的等待已重新讀取。' }
     }
     if (verb === 'layout') {
       const layout: Layout | null = arg === 'compact' || arg === 'wide' || arg === 'auto' || arg === 'mini' ? arg : null
@@ -512,6 +712,7 @@ export const register: Register = (on, options) => {
 
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
+    if (verdict.decision === 'ask' && e.tool_use_id) asked.add(e.tool_use_id)
     if (e.tool_use_id) {
       const check: Check = {
         id: e.tool_use_id,
@@ -532,12 +733,48 @@ export const register: Register = (on, options) => {
     return verdict
   })
 
+  // A permission dialog opens: this session waits on the person until the call returns.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    await setWaiting($, 'permission').catch(swallow)
+    return next(e)
+  }).catch(async (_$, e, next) => next(e))
+
+  // At the end of a turn the engine's own list of background tasks says which Codex runs still live.
+  on('classic.Stop', async ($, e, next) => {
+    const liveIds = e.background_tasks?.map(task => task.id)
+    for (const end of stopCodex(await getCards($), liveIds)) await codexEnded($, end.id, end.ok)
+    await refreshStatus($, cfg)
+    return next(e)
+  }).catch(async (_$, e, next) => next(e))
+
   on('tool.call', async ($, e, next) => {
+    const tool = String(e.tool)
     callLoop.set(e.tool_use_id, e.agentId ?? null)
     // A review is noted whoever starts it: the tree is read as the call begins, and kept only if
     // the call is not refused and does not fail.
-    const review = isReviewCall(String(e.tool), e) ? readTreeQuietly($) : undefined
-    const ran = await next(e).finally(() => callLoop.delete(e.tool_use_id))
+    const review = isReviewCall(tool, e) ? readTreeQuietly($) : undefined
+    // A question put to the person is a wait from the call's start to its return, whoever asks.
+    if (isQuestionTool(tool)) await setWaiting($, 'question').catch(swallow)
+    // A `codex exec` the main session runs is a subagent card from here to its end.
+    const shell = !e.agentId && (tool === 'Bash' || tool === 'PowerShell') ? (e as unknown as { command?: unknown; description?: unknown }) : null
+    const run =
+      shell && typeof shell.command === 'string'
+        ? describeCodex(shell.command, typeof shell.description === 'string' ? shell.description : undefined, tool === 'PowerShell' ? 'powershell' : 'bash')
+        : undefined
+    if (run) {
+      await codexStarted($, e.tool_use_id, run).catch(swallow)
+      await refreshStatus($, cfg)
+    }
+    const ran = await next(e)
+      .catch(async error => {
+        if (run) await codexEnded($, e.tool_use_id, false).catch(swallow)
+        throw error
+      })
+      .finally(() => {
+        callLoop.delete(e.tool_use_id)
+        void settleWait($, tool, e.tool_use_id).catch(swallow)
+      })
+    if (run) await codexSettled($, e.tool_use_id, ran).catch(swallow)
     const didRun = ran.deny === undefined
     if (review !== undefined && didRun && ran.isError !== true) void review.then(tree => recordReview($, tree)).catch(swallow)
     // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
@@ -577,17 +814,29 @@ export const register: Register = (on, options) => {
     if (ran.deny !== undefined) await say($, await whoIs($, e.agentId), `${text}  已拒絕`, 'error', e.agentId ?? null)
     else if (hasFailed) await say($, await whoIs($, e.agentId), `${text}  ✗`, 'error', e.agentId ?? null)
     else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
-    if (isSettled || !didRun) await refreshStatus($, cfg)
+    if (isSettled || !didRun || run) await refreshStatus($, cfg)
     return ran
   })
 
   // A typed /…review has no result to wait for: it counts as it is sent, if the person typed it.
+  // A background task's notification arrives as a prompt of its own origin: it ends a Codex run.
+  // What the person types answers whatever was asked.
   on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'task-notification') {
+      for (const n of parseNotifications(e.text)) {
+        const card = codexCardFor(await getCards($), n.id, n.toolUseId)
+        if (card) await codexEnded($, card.id, n.ok).catch(swallow)
+      }
+      await refreshStatus($, cfg)
+    }
     const result = await next(e)
-    if (result.drop === undefined && isPersonPrompt(e.origin.kind) && isReviewPrompt(e.text)) {
-      void readTreeQuietly($)
-        .then(tree => recordReview($, tree))
-        .catch(swallow)
+    if (result.drop === undefined && isPersonPrompt(e.origin.kind)) {
+      if (isReviewPrompt(e.text)) {
+        void readTreeQuietly($)
+          .then(tree => recordReview($, tree))
+          .catch(swallow)
+      }
+      await endWaiting($).catch(swallow)
     }
     return result
   }).catch(async (_$, e, next) => next(e))
@@ -663,6 +912,7 @@ export const register: Register = (on, options) => {
       await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: false }))
       // The turn may have changed files: the next pump reads git without waiting out its 30 seconds.
       dueAt.git = 0
+      await endWaiting($).catch(swallow)
       await refreshStatus($, cfg)
       return done
     }
@@ -698,7 +948,7 @@ export const register: Register = (on, options) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     const hasClient = 'Client' in els
-    const [m, u, a, g, cards, lp, lines, t, r, v, now, cx, gs] = await Promise.all([
+    const [m, u, a, g, cards, lp, lines, t, r, v, now, cx, gs, fb, others] = await Promise.all([
       getMain($),
       getUsage($),
       getArchitect($),
@@ -712,7 +962,12 @@ export const register: Register = (on, options) => {
       $.clock.now(),
       read($, codex),
       read($, git),
+      read($, fable),
+      read($, waitingOthers),
     ])
+    // Another live session waiting on the person: one red line, absent while nobody waits.
+    const banner = bannerText(others, now)
+    const fableWindow = fb?.window
     const W = Math.max(40, e.props.bodyColumns)
     const layout = v.layout ?? cfg.layout
     const isWide = layout === 'wide' || (layout === 'auto' && W >= 110)
@@ -761,6 +1016,23 @@ export const register: Register = (on, options) => {
       ) : (
         <Text color={color}>{fmtTimer((endAt ?? now) - since)}</Text>
       )
+
+    // A usage window as a gauge: percent used, the time to its reset where there is room; past its
+    // reset the last reading stays, marked `~` and 過期, never guessed as a fresh window.
+    const usageWindow = (label: string, wd: UsageWindow | undefined, w: number, color: string) => {
+      const wv = windowView(wd, now)
+      if (wv === null) return <Text dimColor>{`${label} —   `}</Text>
+      const ug = gauge(wv.pct, 5)
+      const tail = wv.isStale ? ' 過期' : w >= 56 && wv.resetIn ? ` ↻${wv.resetIn}` : ''
+      return (
+        <Text wrap="truncate">
+          <Text dimColor>{`${label} `}</Text>
+          <Text color={wv.isStale ? C.dim : wv.pct >= 80 ? C.warn : color}>{ug.on}</Text>
+          <Text color={C.faint}>{ug.off}</Text>
+          <Text dimColor>{` ${wv.isStale ? '~' : ''}${wv.pct}%${tail}  `}</Text>
+        </Text>
+      )
+    }
 
     // ---- main
     const effortN = { low: 1, medium: 2, high: 3, xhigh: 4, max: 4 }[m.effort] ?? 0
@@ -811,6 +1083,7 @@ export const register: Register = (on, options) => {
             })}
           </Text>
         ) : null}
+        {fableWindow ? <Text wrap="truncate">{usageWindow(fb?.isStale ? 'Fable~' : 'Fable', fableWindow, w, C.main)}</Text> : null}
         {m.speed ? <Text dimColor wrap="truncate">{`上次請求  ${fmtSpeed(m.speed)}`}</Text> : null}
       </Box>
     )
@@ -1007,7 +1280,7 @@ export const register: Register = (on, options) => {
                     {sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`}
                   </Text>
                   <Text dimColor wrap="truncate">
-                    {c.steps > 0 ? `ctx ${kTokens(c.ctx)} · 輸出 ${kTokens(c.out)} · ${c.steps} 步` : '啟動中…'}
+                    {c.codex ? 'codex exec' : c.steps > 0 ? `ctx ${kTokens(c.ctx)} · 輸出 ${kTokens(c.out)} · ${c.steps} 步` : '啟動中…'}
                   </Text>
                   <Box>
                     <Text color={c.lastStop === 'max_tokens' ? C.warn : statusColor(c)}>
@@ -1032,7 +1305,7 @@ export const register: Register = (on, options) => {
             {expandedCard.description || expandedCard.type}
           </Text>
           <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${statusLabel(expandedCard.status)} · ${expandedCard.steps} 步`}</Text>
-          {expandedCard.tools.length === 0 ? <Text color={C.faint}>尚無工具呼叫</Text> : null}
+          {expandedCard.tools.length === 0 && !expandedCard.codex ? <Text color={C.faint}>尚無工具呼叫</Text> : null}
           {expandedCard.tools.map(n => (
             <Text color={n.isError ? C.warn : C.text} wrap="truncate">
               {`${n.isError ? '✗' : '·'} ${n.text}`}
@@ -1088,20 +1361,6 @@ export const register: Register = (on, options) => {
     }
 
     // ---- Codex usage: percent used per window, as the main box shows Claude's
-    const codexWindow = (label: string, wd: UsageWindow | undefined, w: number) => {
-      const wv = windowView(wd, now)
-      if (wv === null) return <Text dimColor>{`${label} —   `}</Text>
-      const cg = gauge(wv.pct, 5)
-      const tail = wv.isStale ? ' 過期' : w >= 56 && wv.resetIn ? ` ↻${wv.resetIn}` : ''
-      return (
-        <Text wrap="truncate">
-          <Text dimColor>{`${label} `}</Text>
-          <Text color={wv.isStale ? C.dim : wv.pct >= 80 ? C.warn : C.codex}>{cg.on}</Text>
-          <Text color={C.faint}>{cg.off}</Text>
-          <Text dimColor>{` ${wv.isStale ? '~' : ''}${wv.pct}%${tail}  `}</Text>
-        </Text>
-      )
-    }
     const codexPanel = (w: number) =>
       cx ? (
         <Box flexDirection="column" borderStyle="round" borderColor={C.codex} paddingX={1} width={w}>
@@ -1114,8 +1373,8 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
           <Text wrap="truncate">
-            {codexWindow('5小時', cx.fiveHour, w)}
-            {codexWindow('每週', cx.weekly, w)}
+            {usageWindow('5小時', cx.fiveHour, w, C.codex)}
+            {usageWindow('每週', cx.weekly, w, C.codex)}
           </Text>
           {cx.note ? (
             <Text dimColor wrap="truncate">
@@ -1170,7 +1429,7 @@ export const register: Register = (on, options) => {
     // The main box's speed line and the gap above the log are a row each.
     const codexRows = cx ? 4 + (cx.note ? 1 : 0) : 0
     const gitRows = gs ? 4 + (canUnfold(gs) ? 1 : 0) + pathRows(gs, v.gitOpen) : 0
-    const used = 2 + 5 + (m.speed ? 1 : 0) + 1 + codexRows + gitRows + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + (banner ? 1 : 0) + 5 + (m.speed ? 1 : 0) + (fableWindow ? 1 : 0) + 1 + codexRows + gitRows + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1273,10 +1532,11 @@ export const register: Register = (on, options) => {
     if (isMini) {
       // Codex and the branch share one row; while it shows, one agent row fewer keeps the summary at 8.
       const vitals = [
+        fableWindow ? windowShort(fb?.isStale ? 'Fable~' : 'Fable', fableWindow, now) : null,
         cx ? `Codex ${windowShort('5小時', cx.fiveHour, now)} · ${windowShort('每週', cx.weekly, now)}` : null,
         gs ? `⎇ ${gs.branch} ${unreviewedLabel(gs)} · ${changedLabel(gs)}` : null,
       ].filter(Boolean)
-      const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, vitals.length > 0 ? 2 : 3)
+      const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, Math.max(1, 3 - (vitals.length > 0 ? 1 : 0) - (banner ? 1 : 0)))
       const counts = ` ${s.rule} 允許 · ${s.cleared} ${decider}${s.ask > 0 ? ` · ${s.ask} 待決` : ''} · ${s.deny} 拒絕`
       const strip = g.recent.slice(-Math.max(4, W - cells(cfg.gateLabel) - 1 - cells(counts)))
       const mg = u.pct !== null ? gauge(u.pct, 6) : null
@@ -1295,6 +1555,11 @@ export const register: Register = (on, options) => {
             {u.costUsd !== null ? <Text dimColor>{` · ${fmtUsd(u.costUsd)}`}</Text> : null}
             {showArchitect ? <Text color={C.arch}>{` · ${cfg.architectLabel.toLowerCase()} ${advising ? '諮詢中' : a.consults.length}`}</Text> : null}
           </Text>
+          {banner ? (
+            <Text color={C.warn} bold wrap="truncate">
+              {banner}
+            </Text>
+          ) : null}
           {vitals.length > 0 ? (
             <Text color={C.dim} wrap="truncate">
               {vitals.join('   ')}
@@ -1381,6 +1646,11 @@ export const register: Register = (on, options) => {
             </Text>
           ))}
         </Box>
+        {banner ? (
+          <Text color={C.warn} bold wrap="truncate">
+            {banner}
+          </Text>
+        ) : null}
         {body}
         {svgLanes}
       </Box>

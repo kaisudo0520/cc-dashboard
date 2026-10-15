@@ -64,6 +64,8 @@ export type AgentCard = {
   lastStop: string | null
   tools: ToolNote[]
   answer: string
+  /** Set on a `codex exec` run the main session started, shown as a subagent; its id is the shell call's. */
+  codex?: { taskId?: string }
 }
 
 /** A model loop whose id matches no card: a workflow agent, a compaction or a memory fork. */
@@ -115,6 +117,24 @@ export type CodexQuota = {
   note?: string
 }
 
+/** The Fable weekly window from /api/oauth/usage; `isStale` when the last ask failed and the figure may be old. */
+export type FableQuota = { window?: UsageWindow; isStale: boolean }
+
+export type WaitReason = 'permission' | 'question'
+
+/** Another live session waiting on the person; the longest wait is first in a list of them. */
+export type WaitingRow = { id: string; name: string; reason: WaitReason; sinceMs: number }
+
+/** A Claude Code process the session registry lists and the process table confirms. */
+export type LiveSession = {
+  id: string
+  /** The process it runs in, which names its wait mark. */
+  pid: number
+  name: string
+  /** True for the session this dashboard belongs to. */
+  isHere: boolean
+}
+
 /** The session's repository as the 分支 panel shows it. */
 export type GitSnap = {
   branch: string
@@ -150,6 +170,14 @@ declare module 'claude-code' {
       codex: CodexQuota | null
       /** The session's repository; null outside one, or when git cannot be read. */
       git: GitSnap | null
+      /** The Fable weekly window; null until first asked. */
+      fable: FableQuota | null
+      /** This session's own wait on the person, null when there is none. */
+      waiting: { reason: WaitReason; sinceMs: number } | null
+      /** The live Claude Code sessions, from the registry and the process table. */
+      sessions: LiveSession[]
+      /** The other live sessions waiting on the person, longest wait first. */
+      waitingOthers: WaitingRow[]
     }
   }
 }
