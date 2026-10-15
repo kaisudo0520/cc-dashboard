@@ -61,18 +61,18 @@ export const sameWaits = (a: readonly WaitingRow[], b: readonly WaitingRow[]): b
 /** A tool that stops to ask the person: a question, or a plan to approve. */
 export const isQuestionTool = (tool: string): boolean => tool === 'AskUserQuestion' || tool === 'ExitPlanMode'
 
-const WAIT_LABEL: Record<WaitReason, string> = { permission: '權限', question: '提問' }
+const WAIT_LABEL: Record<WaitReason, string> = { permission: 'permission', question: 'question' }
 
 /**
  * The banner line: the session that has waited longest, why, and since when,
  * with how many more wait. Undefined while nobody does. Permission waits are
- * known to start and not to end until their call returns, hence "等你".
+ * known to start and not to end until their call returns, hence "waiting on you".
  */
 export const bannerText = (rows: readonly WaitingRow[], nowMs: number): string | undefined => {
   const [first] = rows
   if (first === undefined) return undefined
 
-  const more = rows.length > 1 ? ` · 另有 ${rows.length - 1}` : ''
+  const more = rows.length > 1 ? ` · +${rows.length - 1} more` : ''
 
-  return `! 等你回應：${plain(first.name)} ${WAIT_LABEL[first.reason]} ${ago(first.sinceMs, nowMs)}${more}`
+  return `! waiting on you: ${plain(first.name)} ${WAIT_LABEL[first.reason]} ${ago(first.sinceMs, nowMs)}${more}`
 }

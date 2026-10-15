@@ -7,13 +7,13 @@ const ID = '019a1b2c-3d4e-7f80-9a1b-2c3d4e5f6071'
 test('codex exec read-only is a planning draft, and the call description rides along as a note', async () => {
   expect(
     describeCodex('codex exec --sandbox read-only -m gpt-6-sol -C "$(pwd)" - < brief.md', '草擬規劃'),
-  ).toEqual({ purpose: 'Codex 規劃草稿', note: '草擬規劃' })
+  ).toEqual({ purpose: 'Codex plan draft', note: '草擬規劃' })
 })
 
 test('codex exec workspace-write is a review; --sandbox= and -s forms are read too', async () => {
-  expect(describeCodex('codex exec --sandbox=workspace-write - < r.md')).toEqual({ purpose: 'Codex 審查' })
-  expect(describeCodex('codex exec -s workspace-write - < r.md')?.purpose).toBe('Codex 審查')
-  expect(describeCodex('codex exec -s "read-only" - < r.md')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('codex exec --sandbox=workspace-write - < r.md')).toEqual({ purpose: 'Codex review' })
+  expect(describeCodex('codex exec -s workspace-write - < r.md')?.purpose).toBe('Codex review')
+  expect(describeCodex('codex exec -s "read-only" - < r.md')?.purpose).toBe('Codex plan draft')
 })
 
 test('a codex exec with no sandbox flag is plain Codex', async () => {
@@ -32,7 +32,7 @@ test('a command that does not run codex exec is not Codex', async () => {
 test('codex found after cd, a pipe or as codex.cmd', async () => {
   expect(describeCodex('cd repo && codex exec - < x')?.purpose).toBe('Codex')
   expect(describeCodex('codex.cmd exec - < x')?.purpose).toBe('Codex')
-  expect(describeCodex('codex.exe exec --sandbox read-only -')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('codex.exe exec --sandbox read-only -')?.purpose).toBe('Codex plan draft')
 })
 
 test('codex exec counts only in command position: at the start, or after ; && || | ( or &', async () => {
@@ -41,13 +41,13 @@ test('codex exec counts only in command position: at the start, or after ; && ||
   expect(describeCodex('make || codex exec - < x')?.purpose).toBe('Codex')
   expect(describeCodex('cat brief.md | codex exec -')?.purpose).toBe('Codex')
   expect(describeCodex('(codex exec -)')?.purpose).toBe('Codex')
-  expect(describeCodex('& codex.exe exec --sandbox read-only -')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('& codex.exe exec --sandbox read-only -')?.purpose).toBe('Codex plan draft')
   expect(describeCodex('cd repo && & codex exec -')?.purpose).toBe('Codex')
 })
 
 test('env assignments and npx in front of codex are fine', async () => {
   expect(describeCodex('CODEX_HOME=/x codex exec - < r.md')?.purpose).toBe('Codex')
-  expect(describeCodex('A=1 B="two words" codex exec -s workspace-write -')?.purpose).toBe('Codex 審查')
+  expect(describeCodex('A=1 B="two words" codex exec -s workspace-write -')?.purpose).toBe('Codex review')
   expect(describeCodex('npx codex exec - < r.md')?.purpose).toBe('Codex')
   expect(describeCodex('npx -y codex exec -')?.purpose).toBe('Codex')
 })
@@ -68,21 +68,21 @@ test('a line end between two commands is a command position, but one between cod
 test('command positions in the shells: after a line end, { , then / do / else, $( and a backtick, and at the start of a call operator', async () => {
   const model = 'CODEX_MODEL=$(jq -r .codex ~/.claude/model-choice.json)\ncodex exec --sandbox read-only -m "$CODEX_MODEL" - < brief.md'
 
-  expect(describeCodex(model)?.purpose).toBe('Codex 規劃草稿')
-  expect(describeCodex('cd x\ncodex exec -s workspace-write -')?.purpose).toBe('Codex 審查')
+  expect(describeCodex(model)?.purpose).toBe('Codex plan draft')
+  expect(describeCodex('cd x\ncodex exec -s workspace-write -')?.purpose).toBe('Codex review')
   expect(describeCodex('if true; then codex exec - < b.md; fi')?.purpose).toBe('Codex')
-  expect(describeCodex('for f in a b; do codex exec -s workspace-write - < $f; done')?.purpose).toBe('Codex 審查')
-  expect(describeCodex('if x; then a; else codex exec -s read-only -; fi')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('for f in a b; do codex exec -s workspace-write - < $f; done')?.purpose).toBe('Codex review')
+  expect(describeCodex('if x; then a; else codex exec -s read-only -; fi')?.purpose).toBe('Codex plan draft')
   expect(describeCodex('{ codex exec -; }')?.purpose).toBe('Codex')
   expect(describeCodex('out=$(codex exec - < b.md)')?.purpose).toBe('Codex')
   expect(describeCodex('out="$(codex exec - < b.md)"')?.purpose).toBe('Codex')
-  expect(describeCodex('echo "$(codex exec -s workspace-write -)"')?.purpose).toBe('Codex 審查')
+  expect(describeCodex('echo "$(codex exec -s workspace-write -)"')?.purpose).toBe('Codex review')
   expect(describeCodex('out=`codex exec -`')?.purpose).toBe('Codex')
 })
 
 test('prefixes in front of codex: timeout, env, nohup, time, npx with a package, and a path to it', async () => {
   expect(describeCodex('timeout 600 codex exec -')?.purpose).toBe('Codex')
-  expect(describeCodex('timeout --foreground 10m codex exec -s read-only -')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('timeout --foreground 10m codex exec -s read-only -')?.purpose).toBe('Codex plan draft')
   expect(describeCodex('env A=1 codex exec -')?.purpose).toBe('Codex')
   expect(describeCodex('env -i A=1 B=2 codex exec -')?.purpose).toBe('Codex')
   expect(describeCodex('nohup codex exec - &')?.purpose).toBe('Codex')
@@ -90,14 +90,14 @@ test('prefixes in front of codex: timeout, env, nohup, time, npx with a package,
   expect(describeCodex('npx @openai/codex exec -')?.purpose).toBe('Codex')
   expect(describeCodex('~/bin/codex exec -')?.purpose).toBe('Codex')
   expect(describeCodex('/usr/local/bin/codex exec -')?.purpose).toBe('Codex')
-  expect(describeCodex('C:\\tools\\codex.exe exec -s workspace-write -', undefined, 'powershell')?.purpose).toBe('Codex 審查')
+  expect(describeCodex('C:\\tools\\codex.exe exec -s workspace-write -', undefined, 'powershell')?.purpose).toBe('Codex review')
   expect(describeCodex('C:/tools/codex.exe exec -')?.purpose).toBe('Codex')
   expect(describeCodex('"$HOME/bin/codex" exec -')?.purpose).toBe('Codex')
 })
 
 test('PowerShell: the call operator on a quoted path, and a string that ends in a backslash', async () => {
   expect(describeCodex('& "C:\\tools\\codex.exe" exec -', undefined, 'powershell')?.purpose).toBe('Codex')
-  expect(describeCodex("& 'C:\\tools\\codex.cmd' exec -s read-only -", undefined, 'powershell')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex("& 'C:\\tools\\codex.cmd' exec -s read-only -", undefined, 'powershell')?.purpose).toBe('Codex plan draft')
   expect(describeCodex('Set-Location "C:\\work\\"; codex exec -o "out.md" -', undefined, 'powershell')?.purpose).toBe('Codex')
   expect(describeCodex('$x = "a`" b"; codex exec -', undefined, 'powershell')?.purpose).toBe('Codex')
 })
@@ -114,7 +114,7 @@ test('a comment is not a command, and neither is a mention after another command
 test('the flags that decide the purpose are the run\'s own: not those of a later command on the line', async () => {
   expect(describeCodex('codex exec - < b.md && echo "-s workspace-write"')?.purpose).toBe('Codex')
   expect(describeCodex('codex exec -m x - ; ls -s workspace-write')?.purpose).toBe('Codex')
-  expect(describeCodex('codex exec \\\n  --sandbox read-only - < b.md')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('codex exec \\\n  --sandbox read-only - < b.md')?.purpose).toBe('Codex plan draft')
   expect(describeCodex('codex exec - 2>&1 | tee log')?.purpose).toBe('Codex')
 })
 
@@ -183,7 +183,7 @@ test('a long heredoc brief followed by the real codex exec within the cap is see
   const brief = `cat > brief.md <<'EOF'\n${'line of brief, codex exec -s workspace-write\n'.repeat(1_000)}EOF\ncodex exec -s read-only - < brief.md`
 
   expect(brief.length).toBeGreaterThan(40_000)
-  expect(describeCodex(brief)?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex(brief)?.purpose).toBe('Codex plan draft')
 })
 
 test('a heredoc brief longer than the cap hides what follows it: it is masked to the end, not guessed at', async () => {
@@ -198,14 +198,14 @@ test('heredoc delimiters with a dash or a dot in them close at the same word', a
   expect(describeCodex('cat > brief.md <<EOF.md\nnotes\ncodex exec -s workspace-write\nEOF.md\nls')).toBeUndefined()
   expect(describeCodex('cat > brief.md <<"A B"\ncodex exec x\nA B\nls')).toBeUndefined()
   expect(describeCodex("cat > brief.md <<'END-OF-BRIEF'\nnotes\nEND-OF-BRIEF\ncodex exec -s read-only - < brief.md")?.purpose).toBe(
-    'Codex 規劃草稿',
+    'Codex plan draft',
   )
-  expect(describeCodex('cat > brief.md <<EOF.md\nnotes\nEOF.md\ncodex exec -s read-only - < brief.md')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('cat > brief.md <<EOF.md\nnotes\nEOF.md\ncodex exec -s read-only - < brief.md')?.purpose).toBe('Codex plan draft')
 })
 
 test('a shift inside $(( )) is arithmetic, not a heredoc', async () => {
   expect(describeCodex('echo $((1<<x))\ncodex exec -')?.purpose).toBe('Codex')
-  expect(describeCodex('echo $((1<<EOF)) && codex exec -s read-only -')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('echo $((1<<EOF)) && codex exec -s read-only -')?.purpose).toBe('Codex plan draft')
 })
 
 test('more words that run a command: if, while, until, and wrapper flags that take a value', async () => {
@@ -216,14 +216,14 @@ test('more words that run a command: if, while, until, and wrapper flags that ta
   expect(describeCodex('timeout -k 5 10m codex exec -')?.purpose).toBe('Codex')
   expect(describeCodex('env -u FOO codex exec -')?.purpose).toBe('Codex')
   expect(describeCodex('npx -y @openai/codex@latest exec -')?.purpose).toBe('Codex')
-  expect(describeCodex('npx --package @openai/codex codex exec -s read-only -')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('npx --package @openai/codex codex exec -s read-only -')?.purpose).toBe('Codex plan draft')
   expect(describeCodex('echo x | xargs codex exec')).toBeUndefined()
 })
 
 test('here-strings and block comments belong to PowerShell, and only to it', async () => {
   const hereString = "$p = @'\ncodex exec -s workspace-write\n'@\n$p | codex exec -s read-only -"
 
-  expect(describeCodex(hereString, undefined, 'powershell')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex(hereString, undefined, 'powershell')?.purpose).toBe('Codex plan draft')
   // In bash `@'` opens an ordinary quote: the first line reads differently, and no here-string hides anything.
   expect(describeCodex("echo user@'\nhost'\ncodex exec -", undefined, 'bash')?.purpose).toBe('Codex')
   expect(describeCodex('<# codex exec #>\nls', undefined, 'powershell')).toBeUndefined()
@@ -233,11 +233,11 @@ test('here-strings and block comments belong to PowerShell, and only to it', asy
 })
 
 test('the sandbox flag is found in the code and read as written: a prompt that holds one does not decide it', async () => {
-  expect(describeCodex('codex exec "x -s workspace-write" -s read-only')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('codex exec "x -s workspace-write" -s read-only')?.purpose).toBe('Codex plan draft')
   expect(describeCodex('codex exec "use -s workspace-write"')?.purpose).toBe('Codex')
-  expect(describeCodex("codex exec 'a --sandbox workspace-write' --sandbox=\"read-only\"")?.purpose).toBe('Codex 規劃草稿')
-  expect(describeCodex('codex exec -s "workspace-write" -')?.purpose).toBe('Codex 審查')
-  expect(describeCodex('codex exec -s \\\n  workspace-write -')?.purpose).toBe('Codex 審查')
+  expect(describeCodex("codex exec 'a --sandbox workspace-write' --sandbox=\"read-only\"")?.purpose).toBe('Codex plan draft')
+  expect(describeCodex('codex exec -s "workspace-write" -')?.purpose).toBe('Codex review')
+  expect(describeCodex('codex exec -s \\\n  workspace-write -')?.purpose).toBe('Codex review')
 })
 
 test('a heredoc body that mentions codex exec is not a run', async () => {
@@ -254,17 +254,17 @@ test('quoted words that mention codex exec are not a run', async () => {
 })
 
 test('a heredoc after codex exec is the prompt: the run is seen, and the prompt\'s words do not set its purpose', async () => {
-  expect(describeCodex("codex exec --sandbox read-only - <<'EOF'\nplease use -s workspace-write and codex exec\nEOF")?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex("codex exec --sandbox read-only - <<'EOF'\nplease use -s workspace-write and codex exec\nEOF")?.purpose).toBe('Codex plan draft')
   expect(describeCodex("codex exec - <<'EOF'\n--sandbox workspace-write\nEOF")?.purpose).toBe('Codex')
 })
 
 test('codex exec resume is a continued talk, with or without an id on the line', async () => {
-  expect(describeCodex(`codex exec resume ${ID} - < next.md`)).toEqual({ purpose: 'Codex 續談' })
-  expect(describeCodex(`codex exec -m gpt-6-sol -c model_reasoning_effort=high resume ${ID} -`)).toEqual({ purpose: 'Codex 續談' })
-  expect(describeCodex('codex exec resume --last -')).toEqual({ purpose: 'Codex 續談' })
+  expect(describeCodex(`codex exec resume ${ID} - < next.md`)).toEqual({ purpose: 'Codex resume' })
+  expect(describeCodex(`codex exec -m gpt-6-sol -c model_reasoning_effort=high resume ${ID} -`)).toEqual({ purpose: 'Codex resume' })
+  expect(describeCodex('codex exec resume --last -')).toEqual({ purpose: 'Codex resume' })
 })
 
 test('the word resume inside a prompt is not a resume', async () => {
-  expect(describeCodex('codex exec "please resume the work" --sandbox read-only')?.purpose).toBe('Codex 規劃草稿')
-  expect(describeCodex('codex exec --sandbox read-only resume-notes.md')?.purpose).toBe('Codex 規劃草稿')
+  expect(describeCodex('codex exec "please resume the work" --sandbox read-only')?.purpose).toBe('Codex plan draft')
+  expect(describeCodex('codex exec --sandbox read-only resume-notes.md')?.purpose).toBe('Codex plan draft')
 })

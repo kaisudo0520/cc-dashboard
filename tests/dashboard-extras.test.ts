@@ -2,10 +2,29 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { canUnfold, changedLabel, codexCard, codexCardFor, endCard, pathLines, stopCodex, syncLabel, unreviewedLabel, windowShort, windowView } from '../hooks/core'
+import {
+  canUnfold,
+  changedLabel,
+  codexCard,
+  codexCardFor,
+  endCard,
+  gauge,
+  LINE_GLYPHS,
+  limitWindow,
+  meterPercent,
+  meterWidth,
+  padCells,
+  pathLines,
+  stopCodex,
+  syncLabel,
+  unreviewedLabel,
+  windowMeter,
+  windowShort,
+  windowView,
+} from '../hooks/core'
 import type { GitSnap } from '../types'
 
-// The panels cc-dashboard adds to Flightdeck: Codex's usage windows and the 分支 panel (how many
+// The panels cc-dashboard adds to Flightdeck: Codex's usage windows and the branch panel (how many
 // changed files no review has seen, and how many changed). A stand-in engine answers the reads.
 
 const NOW = new Date(2026, 9, 14, 14, 2, 11).getTime()
@@ -170,21 +189,45 @@ test('a Codex window shows percent used, kept and marked past its reset, never g
   expect(windowView({ usedPercent: 13.4, resetsAtMs: NOW + 2 * HOUR_MS + 10 * 60_000 }, NOW)).toEqual({ pct: 13, isStale: false, resetIn: '2h10m' })
   expect(windowView({ usedPercent: 40, resetsAtMs: NOW - 1 }, NOW)).toEqual({ pct: 40, isStale: true, resetIn: '' })
   expect(windowView(undefined, NOW)).toBe(null)
-  expect([windowShort('5小時', { usedPercent: 13 }, NOW), windowShort('每週', { usedPercent: 40, resetsAtMs: NOW - 1 }, NOW), windowShort('每週', undefined, NOW)]).toEqual([
-    '5小時 13%',
-    '每週 ~40%',
-    '每週 —',
+  expect([windowShort('5h', { usedPercent: 13 }, NOW), windowShort('weekly', { usedPercent: 40, resetsAtMs: NOW - 1 }, NOW), windowShort('weekly', undefined, NOW)]).toEqual([
+    '5h 13%',
+    'weekly ~40%',
+    'weekly —',
   ])
+})
+
+test('a usage window as a row: the time to its reset, stale once past it, a dash before any reading', () => {
+  expect(windowMeter('5h', { usedPercent: 13.4, resetsAtMs: NOW + 2 * HOUR_MS + 10 * 60_000 }, NOW)).toEqual({ label: '5h', pct: 13, isStale: false, detail: '⏱ 2h10m' })
+  expect(windowMeter('weekly', { usedPercent: 40, resetsAtMs: NOW - 1 }, NOW)).toEqual({ label: 'weekly', pct: 40, isStale: true, detail: 'stale' })
+  expect(windowMeter('weekly', { usedPercent: 40 }, NOW)).toEqual({ label: 'weekly', pct: 40, isStale: false, detail: '' })
+  expect(windowMeter('weekly', undefined, NOW)).toEqual({ label: 'weekly', pct: null, isStale: false, detail: '' })
+  expect(limitWindow({ pct: 19, resetsAt: NOW })).toEqual({ usedPercent: 19, resetsAtMs: NOW })
+  expect(limitWindow({ pct: 19, resetsAt: null })).toEqual({ usedPercent: 19 })
+})
+
+test('usage rows line up: the percent right-aligned, one bar width for the whole panel', () => {
+  expect([meterPercent({ label: '', pct: 7, isStale: false, detail: '' }), meterPercent({ label: '', pct: 58, isStale: true, detail: '' }), meterPercent({ label: '', pct: 100, isStale: true, detail: '' })]).toEqual(['   7%', ' ~58%', '~100%'])
+  // 40 columns: 36 inside the frame, less a 5-cell label, three spaces, the percent and a 9-cell detail.
+  expect(meterWidth(40, 5, ['⏱ 3h10m', '⏱ 4d2h', ''])).toBe(14)
+  expect(meterWidth(40, 5, ['⏱ 3h10m', '116k/200k  ⟲2'])).toBe(10) // the widest detail sets every row's bar
+  expect(meterWidth(20, 5, [])).toBe(4) // never under four cells
+  expect(meterWidth(200, 5, [''])).toBe(40) // never over forty
+  expect(padCells('7d', 5)).toBe('7d   ')
+  expect(padCells('分支', 6)).toBe('分支  ') // a wide character counts two
+  expect(padCells('Fable~', 4)).toBe('Fable~')
+  expect(gauge(50, 6, LINE_GLYPHS)).toEqual({ on: '━━━', off: '───' })
+  expect(gauge(150, 4, LINE_GLYPHS)).toEqual({ on: '━━━━', off: '' })
+  expect(gauge(50, 4)).toEqual({ on: '▰▰', off: '▱▱' })
 })
 
 const snap = (over: Partial<GitSnap> = {}): GitSnap => ({ branch: 'main', changed: 5, unreviewed: 3, unreviewedPaths: ['a', 'b', 'c'], ...over })
 
 test('the branch counts read as files unreviewed and files changed; unknown is never zero', () => {
-  expect([unreviewedLabel(snap()), changedLabel(snap())]).toEqual(['未審 3 個檔案', '更新 5 個檔案'])
-  expect(unreviewedLabel(snap({ unreviewed: 0, unreviewedPaths: [] }))).toBe('✓ 未審 0')
-  expect(unreviewedLabel(snap({ unreviewed: undefined, unreviewedPaths: [] }))).toBe('未審 未知')
+  expect([unreviewedLabel(snap()), changedLabel(snap())]).toEqual(['unreviewed 3 files', 'changed 5 files'])
+  expect(unreviewedLabel(snap({ unreviewed: 0, unreviewedPaths: [] }))).toBe('✓ unreviewed 0')
+  expect(unreviewedLabel(snap({ unreviewed: undefined, unreviewedPaths: [] }))).toBe('unreviewed ?')
   expect(canUnfold(snap({ unreviewed: undefined }))).toBe(false)
-  expect(syncLabel(snap())).toBe('無上游')
+  expect(syncLabel(snap())).toBe('no upstream')
   expect(syncLabel(snap({ upstream: 'origin/main', ahead: 2, behind: 1 }))).toBe('↔ origin/main ↑2 ↓1')
 })
 
@@ -202,7 +245,8 @@ test('without Codex or a repository, neither panel nor legend entry is drawn', a
   await refresh($)
   const ui = await $.ui.mount(props(64))
   expect(await ui.find({ text: /^Codex/ })).toBeUndefined()
-  expect(await ui.find({ text: /分支/ })).toBeUndefined()
+  expect(await ui.find({ text: /^branch/ })).toBeUndefined()
+  expect(await ui.find({ text: /^ branch$/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -229,7 +273,7 @@ test('Codex with no rollout yet says why and shows no figures', async ($, on) =>
   await refresh($)
   const ui = await $.ui.mount(props(64))
   expect(await ui.find({ text: 'no usage recorded yet' })).toBeDefined()
-  expect(await ui.find({ text: /5小時 —/ })).toBeDefined()
+  expect(await ui.find({ text: /^5h +—$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -238,11 +282,11 @@ test('a Codex window past its reset keeps its last reading, marked stale', async
   await refresh($)
   await clock.advance(2 * 60_000)
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: /~13% 過期/ })).toBeDefined()
+  expect(await ui.find({ text: /~13% stale/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('the 分支 panel says how many files are unreviewed and how many changed, and u lists them', async ($, on) => {
+test('the branch panel says how many files are unreviewed and how many changed, and u lists them', async ($, on) => {
   const { w } = engine(on, repo())
   await refresh($)
   for (const g of w.gitCalls) {
@@ -250,9 +294,9 @@ test('the 分支 panel says how many files are unreviewed and how many changed, 
     expect(g).not.toContain('-w')
   }
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: '分支 · main' })).toBeDefined()
-  expect(await ui.find({ text: '未審 2 個檔案' })).toBeDefined()
-  expect(await ui.find({ text: '更新 2 個檔案' })).toBeDefined()
+  expect(await ui.find({ text: 'branch · main' })).toBeDefined()
+  expect(await ui.find({ text: 'unreviewed 2 files' })).toBeDefined()
+  expect(await ui.find({ text: 'changed 2 files' })).toBeDefined()
   expect(await ui.find({ text: '↔ origin/main ↑2 ↓1' })).toBeDefined()
   expect(await ui.find({ text: 'src/a.ts' })).toBeUndefined()
   expect((await ui.find({ key: 'git-unreviewed' }))?.props.hotkey).toBe('u')
@@ -274,7 +318,7 @@ test('a review that runs marks what it saw as reviewed; a refused one does not',
   await new Promise(done => setTimeout(done, 20))
   expect(w.store['git-reviewed:N:/repo']).toEqual({ 'src/a.ts': 'h1', 'new.ts': 'h2' })
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: '✓ 未審 0' })).toBeDefined()
+  expect(await ui.find({ text: '✓ unreviewed 0' })).toBeDefined()
   expect(await ui.find({ key: 'git-unreviewed' })).toBeUndefined()
   await ui.unmount()
 })
@@ -289,11 +333,11 @@ test('a /…review the person types counts as it is sent; a notification does no
   expect(w.store['git-reviewed:N:/repo']).toEqual({ 'src/a.ts': 'h1', 'new.ts': 'h2' })
 })
 
-test('hashes that cannot be had read as 未審 未知, never as reviewed', async ($, on) => {
+test('hashes that cannot be had read as unreviewed ?, never as reviewed', async ($, on) => {
   engine(on, repo('only-one\n'))
   await refresh($)
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: '未審 未知' })).toBeDefined()
+  expect(await ui.find({ text: 'unreviewed ?' })).toBeDefined()
   expect(await ui.find({ text: /✓/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -319,8 +363,8 @@ test('the inline summary carries Codex and the branch on one row and stays withi
   const ui = await $.ui.mount(props(110, 'inline'))
   const root = (await ui.drawn()) as { children?: unknown[] }
   expect((root.children ?? []).filter(Boolean).length <= 8).toBe(true)
-  expect(await ui.find({ text: /Codex 5小時 13% · 每週 40%   ⎇ main 未審 2 個檔案 · 更新 2 個檔案/ })).toBeDefined()
-  expect(await ui.find({ text: /\+3 個子代理/ })).toBeDefined()
+  expect(await ui.find({ text: /Codex 5h 13% · weekly 40%   ⎇ main unreviewed 2 files · changed 2 files/ })).toBeDefined()
+  expect(await ui.find({ text: /\+3 more agents/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -399,7 +443,7 @@ test('another live session waiting on the person shows as one red line under the
   await showAndPump($, w, clock)
   for (const [cols, placement] of [[64, 'dock'], [120, 'dock'], [110, 'inline']] as const) {
     const ui = await $.ui.mount(props(cols, placement))
-    const line = await ui.find({ text: /^! 等你回應：jev-router-41 權限 3分前$/ })
+    const line = await ui.find({ text: /^! waiting on you: jev-router-41 permission 3m ago$/ })
     expect(line?.props.color).toBe('error')
     await ui.unmount()
   }
@@ -409,7 +453,7 @@ test('a mark left by a reused pid, or no mark at all, shows no line', async ($, 
   const { w, clock } = engine(on, twoSessions({ [`${MARKS}/22.json`]: JSON.stringify({ sessionId: 'someone-else', reason: 'question', sinceMs: 0 }) }))
   await showAndPump($, w, clock)
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: /等你回應/ })).toBeUndefined()
+  expect(await ui.find({ text: /waiting on you/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -455,8 +499,8 @@ const notify = ($: Engine, taskId: string, status = 'completed', exit = 0) =>
   } as never)
 
 test('the Codex helpers: a run is a card, ended once, settled at a stop, found by task or call id', () => {
-  const card = codexCard('c1', { purpose: 'Codex 規劃草稿', note: '寫計畫' }, 'gpt-6-sol', 5)
-  expect([card.type, card.description, card.status, card.spawnedAt]).toEqual(['Codex', 'Codex 規劃草稿：寫計畫', 'running', 5])
+  const card = codexCard('c1', { purpose: 'Codex plan draft', note: '寫計畫' }, 'gpt-6-sol', 5)
+  expect([card.type, card.description, card.status, card.spawnedAt]).toEqual(['Codex', 'Codex plan draft: 寫計畫', 'running', 5])
   const done = endCard(card, true, 9)
   expect([done.status, done.endedAt]).toEqual(['done', 9])
   expect(endCard(done, false, 20)).toBe(done)
@@ -473,15 +517,15 @@ test('a codex exec is a running subagent card while its call runs, then done, wi
   let during: { running?: unknown; title?: unknown } = {}
   w.onToolCall = async () => {
     const ui = await $.ui.mount(props(64))
-    during = { running: await ui.find({ text: /子代理 · 1 執行中/ }), title: await ui.find({ text: /Codex 規劃草稿/ }) }
+    during = { running: await ui.find({ text: /agents · 1 running/ }), title: await ui.find({ text: /Codex plan draft/ }) }
     await ui.unmount()
   }
   await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN, description: '寫計畫' } as never)
   expect(during.running).toBeDefined()
   expect(during.title).toBeDefined()
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: /子代理 · 0 執行中 · 共 1/ })).toBeDefined()
-  expect(await ui.find({ text: /✓ 完成/ })).toBeDefined()
+  expect(await ui.find({ text: /agents · 0 running · 1 total/ })).toBeDefined()
+  expect(await ui.find({ text: /✓ done/ })).toBeDefined()
   expect(await ui.find({ text: 'codex exec' })).toBeDefined()
   expect(await ui.find({ text: /[0-9a-f]{8}-[0-9a-f]{4}-/ })).toBeUndefined()
   await ui.unmount()
@@ -493,8 +537,8 @@ test('a codex exec that fails is a failed card; a mention of codex exec is no ca
   w.toolResult = { result: SHELL_OUT }
   await $.tool.call({ tool: 'Bash', tool_use_id: 'c2', command: 'echo "codex exec"' } as never)
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: /共 1/ })).toBeDefined()
-  expect(await ui.find({ text: /✗ 失敗/ })).toBeDefined()
+  expect(await ui.find({ text: /1 total/ })).toBeDefined()
+  expect(await ui.find({ text: /✗ failed/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -502,12 +546,12 @@ test('a codex exec moved to the background keeps running until its notification 
   const { w } = engine(on, { toolResult: { result: { ...SHELL_OUT, backgroundTaskId: 'b1' } } })
   await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN, run_in_background: true } as never)
   const mid = await $.ui.mount(props(64))
-  expect(await mid.find({ text: /1 執行中/ })).toBeDefined()
+  expect(await mid.find({ text: /1 running/ })).toBeDefined()
   await mid.unmount()
   await notify($, 'b1', 'failed', 1)
   const after = await $.ui.mount(props(64))
-  expect(await after.find({ text: /0 執行中/ })).toBeDefined()
-  expect(await after.find({ text: /✗ 失敗/ })).toBeDefined()
+  expect(await after.find({ text: /0 running/ })).toBeDefined()
+  expect(await after.find({ text: /✗ failed/ })).toBeDefined()
   await after.unmount()
   void w
 })
@@ -519,10 +563,10 @@ test('at a stop, a background run the engine no longer lists is done; one it lis
     $.classic.Stop({ stop_hook_active: false, background_tasks: ids.map(id => ({ id, type: 'shell', status: 'running', description: 'codex exec' })) } as never)
   await stop(['b1'])
   const still = await $.ui.mount(props(64))
-  expect(await still.find({ text: /1 執行中/ })).toBeDefined()
+  expect(await still.find({ text: /1 running/ })).toBeDefined()
   await still.unmount()
   await stop([])
   const done = await $.ui.mount(props(64))
-  expect(await done.find({ text: /✓ 完成/ })).toBeDefined()
+  expect(await done.find({ text: /✓ done/ })).toBeDefined()
   await done.unmount()
 })

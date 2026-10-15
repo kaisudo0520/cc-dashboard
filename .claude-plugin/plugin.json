@@ -18,13 +18,13 @@
       "title": "顧問標籤",
       "description": "顧問在面板中的名稱",
       "type": "string",
-      "default": "顧問"
+      "default": "ARCHITECT"
     },
     "gateLabel": {
       "title": "權限標籤",
       "description": "權限面板的名稱",
       "type": "string",
-      "default": "權限"
+      "default": "GATE"
     },
     "panels": {
       "title": "面板",
@@ -53,6 +53,12 @@
       "description": "agent 的說明（不只名稱）符合樣式時也算顧問",
       "type": "boolean",
       "default": false
+    },
+    "dockPercent": {
+      "title": "側欄寬度",
+      "description": "全螢幕（/tui fullscreen）時停靠在右側的面板占終端寬度的百分比（20-80），隨視窗縮放調整；手動拖過的寬度優先",
+      "type": "number",
+      "default": 50
     },
     "maxCards": {
       "title": "卡片上限",

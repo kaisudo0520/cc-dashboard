@@ -24,10 +24,10 @@ const VALUE_FLAGS = new Set([
 ])
 
 const SANDBOX_PURPOSE: Readonly<Record<string, string>> = {
-  'read-only': 'Codex 規劃草稿',
-  'workspace-write': 'Codex 審查',
+  'read-only': 'Codex plan draft',
+  'workspace-write': 'Codex review',
 }
-const RESUME_PURPOSE = 'Codex 續談'
+const RESUME_PURPOSE = 'Codex resume'
 const PLAIN_PURPOSE = 'Codex'
 
 // The sandbox the run asks for: `--sandbox=X`, `--sandbox X` or `-s X`, the flag as the code has it, the value as written.

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { AgentCard, Architect, Bucket, Check, CodexQuota, Gate, GitSnap, Layout, LogLine, Loop, Main, Roster, Turn, Usage, UsageWindow, View, WaitReason, WaitingRow } from '../types'
+import type { AgentCard, Architect, Bucket, Check, CodexQuota, Gate, GitSnap, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View, WaitReason, WaitingRow } from '../types'
 import {
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
@@ -24,12 +24,17 @@ import {
   fmtClock,
   fmtDuration,
   fmtTimer,
-  fmtUsd,
-  MOMENT_LABEL,
-  statusLabel,
-  whoLabel,
-  windowView,
+  plural,
   windowShort,
+  windowMeter,
+  meterPercent,
+  meterWidth,
+  padCells,
+  LINE_GLYPHS,
+  limitWindow,
+  claudeWindows,
+  DOCK_MIN_COLUMNS,
+  dockColumns,
   GIT_PATH_ROWS,
   unreviewedLabel,
   changedLabel,
@@ -50,7 +55,6 @@ import {
   lanes,
   limitLabel,
   limitOf,
-  fmtResetIn,
   fmtSpeed,
   listOf,
   logRows,
@@ -75,7 +79,7 @@ import {
   stepSpeed,
   stepLoop,
 } from './core'
-import type { Config, Panel } from './core'
+import type { Config, Meter, Panel } from './core'
 import { describeCodex } from './lib/codex'
 import { ROLLOUT_QUERY, readCodexQuota } from './lib/codex-quota'
 import { FABLE_POLL_MS, fableFromUsage, nextFableDelay } from './lib/fable'
@@ -93,7 +97,6 @@ import { powershellExe, tasklistExe } from './lib/system'
 
 const PANE = 'dashboard'
 const TITLE = 'Dashboard'
-const PANE_COLUMNS = 66
 
 
 // ---------------------------------------------------------------- state
@@ -176,10 +179,10 @@ async function refreshStatus($: EngineInterface, cfg: Config) {
   const running = cards.filter(c => c.status === 'running').length
   const s = gateSummary(g)
   const parts = [
-    u.pct !== null ? `上下文 ${Math.round(u.pct)}%` : null,
-    cards.length > 0 ? `子代理 ${running}/${cards.length}` : null,
-    a.consults.length > 0 || a.ids.length > 0 ? `${cfg.architectLabel.toLowerCase()} ${isAdvising(a) ? '諮詢中' : a.consults.length}` : null,
-    s.deny > 0 ? `拒絕 ${s.deny}` : null,
+    u.pct !== null ? `ctx ${Math.round(u.pct)}%` : null,
+    cards.length > 0 ? `agents ${running}/${cards.length}` : null,
+    a.consults.length > 0 || a.ids.length > 0 ? `${cfg.architectLabel.toLowerCase()} ${isAdvising(a) ? 'advising' : a.consults.length}` : null,
+    s.deny > 0 ? `denied ${s.deny}` : null,
   ]
   // Only fields with something to say; with none, no status entry at all.
   const shown = parts.filter(Boolean)
@@ -189,7 +192,7 @@ async function refreshStatus($: EngineInterface, cfg: Config) {
 async function whoIs($: EngineInterface, agentId: string | undefined) {
   if (!agentId) return 'main'
   const card = (await getCards($)).find(c => c.id === agentId)
-  return card ? shorten(cardTitle(card), 14) : '子代理'
+  return card ? shorten(cardTitle(card), 14) : 'agent'
 }
 
 async function consultStarted($: EngineInterface, cfg: Config, id: string, via: string) {
@@ -198,7 +201,7 @@ async function consultStarted($: EngineInterface, cfg: Config, id: string, via: 
   const at = await $.clock.now()
   await update($, architect, a => startConsult(normalize(DEFAULT_ARCHITECT, a), { id, at, moment, via }))
   if (moment === 'before done') await update($, turn, x => ({ ...normalize(DEFAULT_TURN, x), isReviewing: true }))
-  await say($, cfg.architectLabel.toLowerCase(), cfg.moments ? `${MOMENT_LABEL[moment]} · ${via}` : `諮詢 · ${via}`, 'consult')
+  await say($, cfg.architectLabel.toLowerCase(), cfg.moments ? `${moment} · ${via}` : `consulted · ${via}`, 'consult')
   await refreshStatus($, cfg)
 }
 
@@ -208,22 +211,43 @@ async function consultEnded($: EngineInterface, cfg: Config, advice: string | nu
   const text = first ? shorten(first.replace(/^[#>*\s-]+/, ''), 160) : null
   await update($, architect, a => endConsult(normalize(DEFAULT_ARCHITECT, a), at, text, id))
   await update($, turn, t => ({ ...normalize(DEFAULT_TURN, t), isReviewing: false }))
-  await say($, cfg.architectLabel.toLowerCase(), text ? `建議：${shorten(text, 60)}` : '建議已回傳', 'consult')
+  await say($, cfg.architectLabel.toLowerCase(), text ? `advice: ${shorten(text, 60)}` : 'advice returned', 'consult')
   await refreshStatus($, cfg)
 }
 
 async function noteAdvice($: EngineInterface, cfg: Config, advice: string) {
   await update($, architect, x => ({ ...normalize(DEFAULT_ARCHITECT, x), lastAdvice: advice }))
-  await say($, cfg.architectLabel.toLowerCase(), `建議：${shorten(advice, 60)}`, 'consult')
+  await say($, cfg.architectLabel.toLowerCase(), `advice: ${shorten(advice, 60)}`, 'consult')
 }
 
 async function isArchitectType($: EngineInterface, cfg: Config, type: string) {
   return cfg.architect.test(type) || (await getRoster($)).architectTypes.includes(type)
 }
 
-async function openPane($: EngineInterface) {
+// The dock's width is a share of the terminal's, and the terminal's width is known only from a
+// drawing's viewport or a command's presentation. A drawing may not act, so it notes the width here
+// and the pump asks the dock again (see syncDock). What a person dragged the dock to still wins.
+let terminalColumns: number | undefined
+let lastPlacement: 'dock' | 'inline' | undefined
+let requestedColumns: number | undefined
+
+async function openPane($: EngineInterface, dockPercent: number) {
   // columns apply when docked beside the transcript, rows when seated inline above the prompt.
-  return $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: 8 })
+  // Before any width is known the dock keeps the engine's share; the pump asks once it is.
+  requestedColumns = terminalColumns === undefined ? undefined : dockColumns(terminalColumns, dockPercent)
+  try {
+    return await $.ui.open({ id: PANE, title: TITLE, rows: 8, ...(requestedColumns === undefined ? {} : { columns: requestedColumns }) })
+  } catch (error) {
+    requestedColumns = undefined // a refused open is asked again on the next tick
+    throw error
+  }
+}
+
+// A docked pane asks again when the terminal's width moved its share; inline, or hidden, it is left alone.
+async function syncDock($: EngineInterface, dockPercent: number) {
+  if (lastPlacement !== 'dock' || terminalColumns === undefined) return
+  if (dockColumns(terminalColumns, dockPercent) === requestedColumns) return
+  if (await isPaneShown($)) await openPane($, dockPercent)
 }
 
 async function resetAll($: EngineInterface) {
@@ -238,12 +262,6 @@ async function resetAll($: EngineInterface) {
   await update($, view, () => DEFAULT_VIEW)
   // The context gauge waits for the next measurement rather than showing the pre-clear fill.
   await update($, usage, x => ({ ...normalize(DEFAULT_USAGE, x), pct: null, tokens: null }))
-}
-
-/** The session's cost read fresh, not from the last measurement: the receipt subtracts two of these. */
-async function costNow($: EngineInterface): Promise<number | null> {
-  const u = await $.session.usage().catch(() => null)
-  return u?.cost?.usd ?? null
 }
 
 async function noteMode($: EngineInterface, mode: string | undefined) {
@@ -459,7 +477,7 @@ async function readOthers($: EngineInterface): Promise<number> {
 async function codexStarted($: EngineInterface, id: string, call: { purpose: string; note?: string }) {
   const card = codexCard(id, call, (await read($, codex))?.model ?? '', await $.clock.now())
   await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
-  await say($, shorten(cardTitle(card), 12), '啟動 · Codex', 'info', id)
+  await say($, shorten(cardTitle(card), 12), 'spawned · Codex', 'info', id)
 }
 
 async function codexEnded($: EngineInterface, id: string, ok: boolean) {
@@ -467,7 +485,7 @@ async function codexEnded($: EngineInterface, id: string, ok: boolean) {
   if (card?.codex === undefined || card.status !== 'running') return
   const now = await $.clock.now()
   await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? endCard(c, ok, now) : c)))
-  await say($, await whoIs($, id), ok ? `完成 · ${fmtDuration(now - card.spawnedAt)}` : '失敗', ok ? 'done' : 'error', id)
+  await say($, await whoIs($, id), ok ? `done · ${fmtDuration(now - card.spawnedAt)}` : 'failed', ok ? 'done' : 'error', id)
 }
 
 // The call's result: the run moved to the background (kept running, under its task id), or is over.
@@ -533,9 +551,12 @@ async function pumpPolls($: EngineInterface) {
 }
 
 // One pump per plugin instance: a second start (a hot reload) replaces the first.
-function startPolling($: EngineInterface) {
+function startPolling($: EngineInterface, dockPercent: number) {
   pump?.cancel()
-  pump = $.clock.every(2_000, () => void pumpPolls($).catch(swallow))
+  pump = $.clock.every(2_000, () => {
+    void pumpPolls($).catch(swallow)
+    void syncDock($, dockPercent).catch(swallow)
+  })
 }
 
 // ---------------------------------------------------------------- hooks
@@ -549,7 +570,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'dashboard',
-      description: 'CC Dashboard 即時面板：開啟、關閉、重設、重新整理，或設定版面',
+      description: 'CC Dashboard, the live agent dashboard: open, close, reset, refresh, or set the layout',
       argumentHint: '[open|close|reset|refresh|layout auto|compact|wide|mini]',
     })
     await migrate($)
@@ -561,13 +582,12 @@ export const register: Register = (on, options) => {
         pct: u.context.percent ?? null,
         tokens: u.context.tokens ?? null,
         window: u.context.window,
-        costUsd: u.cost?.usd ?? null,
         limits: u.rateLimits.map(limitOf),
       }))
     }
-    if (cfg.openOnStart) void openPane($).catch(() => undefined)
+    if (cfg.openOnStart) void openPane($, cfg.dockPercent).catch(() => undefined)
     await refreshStatus($, cfg)
-    startPolling($)
+    startPolling($, cfg.dockPercent)
     void pumpPolls($).catch(swallow)
     // A fresh load writes the wait as it stands: none on a start, the open one when a reload lands while a dialog is up.
     void writeMark($).catch(swallow)
@@ -585,32 +605,33 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'dashboard' }, async ($, e) => {
     const [verb = 'open', arg = ''] = e.args.trim().split(/\s+/)
+    if (e.presentation.isFullscreen) terminalColumns = e.presentation.columns
     if (verb === 'close') {
       await $.ui.close({ id: PANE })
-      return { text: 'Dashboard 已關閉。' }
+      return { text: 'Dashboard closed.' }
     }
     if (verb === 'reset') {
       await resetAll($)
       await refreshStatus($, cfg)
-      return { text: 'Dashboard 已重設。' }
+      return { text: 'Dashboard reset.' }
     }
     if (verb === 'refresh') {
       // Read now, whether or not the pane shows; the schedules start over from here. Fable keeps its own.
       sessionsAt = 0
       await Promise.all((['codex', 'git', 'others'] as const).filter(src => !busy.has(src)).map(src => runSource($, src)))
-      return { text: 'Codex 額度、分支與其他 session 的等待已重新讀取。' }
+      return { text: 'Read Codex usage, the branch and the other sessions waiting on you again.' }
     }
     if (verb === 'layout') {
       const layout: Layout | null = arg === 'compact' || arg === 'wide' || arg === 'auto' || arg === 'mini' ? arg : null
-      if (!layout) return { text: '用法：/dashboard layout auto|compact|wide|mini' }
+      if (!layout) return { text: 'Usage: /dashboard layout auto|compact|wide|mini' }
       await update($, view, v => ({ ...normalize(DEFAULT_VIEW, v), layout }))
-      const opened = await openPane($)
-      return { text: opened.isPlaced ? `Dashboard 版面：${layout}。` : `版面設為 ${layout}；面板尚未顯示：${opened.reason}` }
+      const opened = await openPane($, cfg.dockPercent)
+      return { text: opened.isPlaced ? `Dashboard layout: ${layout}.` : `Layout set to ${layout}; the pane is not shown yet: ${opened.reason}` }
     }
-    const opened = await openPane($)
-    if (!opened.isPlaced) return { text: `Dashboard 尚未顯示：${opened.reason}` }
+    const opened = await openPane($, cfg.dockPercent)
+    if (!opened.isPlaced) return { text: `Dashboard is not shown yet: ${opened.reason}` }
     void pumpPolls($).catch(swallow)
-    return { text: 'Dashboard 已開啟。用 ctrl+x tab 聚焦；1-6 展開子代理，f/s/o 展開權限明細，u 展開未審清單。' }
+    return { text: 'Dashboard opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows, u lists the unreviewed files.' }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
@@ -630,8 +651,8 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    const [now, cost] = await Promise.all([$.clock.now(), costNow($)])
-    await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now, costAtStart: cost }))
+    const now = await $.clock.now()
+    await update($, turn, () => ({ ...DEFAULT_TURN, startedAt: now }))
     await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), isRunning: true }))
     // A background architect's report reaches the main loop as the text opening this turn. The
     // SubagentHandback tool call (in tool.call) normally carries it first; this is the fallback.
@@ -676,7 +697,7 @@ export const register: Register = (on, options) => {
     if (cards.some(c => c.id === id)) {
       const step = { model: e.model, usage: result.usage, stopReason: result.stopReason }
       await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? applyStep(c, step) : c)))
-      if (result.stopReason === 'max_tokens') await say($, await whoIs($, id), '達到 max_tokens', 'error', id)
+      if (result.stopReason === 'max_tokens') await say($, await whoIs($, id), 'hit max_tokens', 'error', id)
     } else if (!a.ids.includes(id)) {
       const now = await $.clock.now()
       await update($, loops, l => stepLoop(listOf<Loop>(l), id, now))
@@ -690,7 +711,6 @@ export const register: Register = (on, options) => {
       pct: e.context.percent ?? null,
       tokens: e.context.tokens ?? null,
       window: e.context.window,
-      costUsd: e.cost?.usd ?? null,
       limits: e.rateLimits.map(limitOf),
     }))
     if (e.changed.includes('context')) await refreshStatus($, cfg)
@@ -705,7 +725,7 @@ export const register: Register = (on, options) => {
         const u = normalize(DEFAULT_USAGE, x)
         return { ...u, compactions: u.compactions + 1, lastCompactAt: now }
       })
-      await say($, 'main', `上下文已壓縮（${e.trigger}）`)
+      await say($, 'main', `context compacted (${e.trigger})`)
     }
     return done
   })
@@ -726,7 +746,7 @@ export const register: Register = (on, options) => {
       await update($, gate, g => recordCheck(normalizeGate(g), check))
       // The status line updates when the call settles; only a refusal ends here.
       if (verdict.decision === 'deny') {
-        await say($, 'gate', `規則拒絕 · ${check.detail}`, 'error')
+        await say($, 'gate', `denied by rule · ${check.detail}`, 'error')
         await refreshStatus($, cfg)
       }
     }
@@ -811,7 +831,7 @@ export const register: Register = (on, options) => {
       )
     }
     // The log keeps what is worth a glance: refusals, errors and edits; the rest is on the cards.
-    if (ran.deny !== undefined) await say($, await whoIs($, e.agentId), `${text}  已拒絕`, 'error', e.agentId ?? null)
+    if (ran.deny !== undefined) await say($, await whoIs($, e.agentId), `${text}  denied`, 'error', e.agentId ?? null)
     else if (hasFailed) await say($, await whoIs($, e.agentId), `${text}  ✗`, 'error', e.agentId ?? null)
     else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
     if (isSettled || !didRun || run) await refreshStatus($, cfg)
@@ -891,7 +911,7 @@ export const register: Register = (on, options) => {
     }
     await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
     await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
-    await say($, shorten(cardTitle(card), 12), `啟動 · ${card.type}`, 'info', id)
+    await say($, shorten(cardTitle(card), 12), `spawned · ${card.type}`, 'info', id)
     await refreshStatus($, cfg)
     return started
   })
@@ -901,11 +921,10 @@ export const register: Register = (on, options) => {
     const id = e.agentId
     const now = await $.clock.now()
     if (!id) {
-      const [t, cards, cost] = await Promise.all([getTurn($), getCards($), costNow($)])
+      const [t, cards] = await Promise.all([getTurn($), getCards($)])
       const r = receiptOf(t, {
         durationMs: e.durationMs,
         agentsSince: cards.filter(c => c.spawnedAt >= t.startedAt).length,
-        costNow: cost,
         reason: e.reason,
       })
       await update($, receipt, () => r)
@@ -930,7 +949,7 @@ export const register: Register = (on, options) => {
       )
       const card = cards.find(c => c.id === id)
       const took = card ? fmtDuration(now - card.spawnedAt) : ''
-      await say($, await whoIs($, id), status === 'done' ? `完成 · ${took}` : statusLabel(status), status === 'done' ? 'done' : 'error', id)
+      await say($, await whoIs($, id), status === 'done' ? `done · ${took}` : status, status === 'done' ? 'done' : 'error', id)
     } else {
       await update($, loops, l => listOf<Loop>(l).map(x => (x.id === id ? { ...x, isDone: true, lastAt: now } : x)))
     }
@@ -940,11 +959,16 @@ export const register: Register = (on, options) => {
 
   // ---------------------------------------------------------------- drawing
 
-  const BUCKET_LABEL: Record<Bucket, string> = { file: '檔案', shell: '指令', other: '其他' }
   const receiptText = (x: { durationMs: number; agents: number; edits: number; errors: number }) =>
-    `上回合 ${fmtDuration(x.durationMs)} · 子代理 ${x.agents} · 編輯 ${x.edits} · 錯誤 ${x.errors}`
+    `last turn ${fmtDuration(x.durationMs)} · ${plural(x.agents, 'agent')} · ${plural(x.edits, 'edit')} · ${plural(x.errors, 'error')}`
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    // Noted for the pump, which sizes the dock: a drawing itself only reads. Only the terminal's
+    // drawing counts; a desktop or phone attached to the session measures a pane of its own.
+    if (e.surface === 'terminal') {
+      lastPlacement = e.props.placement
+      if (e.viewport?.isFullscreen === true) terminalColumns = e.viewport.columns
+    }
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     const hasClient = 'Client' in els
@@ -968,7 +992,7 @@ export const register: Register = (on, options) => {
     // Another live session waiting on the person: one red line, absent while nobody waits.
     const banner = bannerText(others, now)
     const fableWindow = fb?.window
-    const W = Math.max(40, e.props.bodyColumns)
+    const W = Math.max(DOCK_MIN_COLUMNS, e.props.bodyColumns)
     const layout = v.layout ?? cfg.layout
     const isWide = layout === 'wide' || (layout === 'auto' && W >= 110)
     const colW = isWide ? Math.floor((W - 2) / 2) : W
@@ -991,7 +1015,7 @@ export const register: Register = (on, options) => {
       log: false,
     }
     const panels = cfg.panels.filter(p => !isEmpty[p])
-    const decider = m.mode === 'auto' ? '分類器' : '你'
+    const decider = m.mode === 'auto' ? 'classifier' : 'you'
 
     // A connector between panels: animated while its flow is live, a dim line otherwise.
     const rail = (key: string, active: boolean, color: string, width: number, marks: number[] = [], isMerge = false) =>
@@ -1017,76 +1041,70 @@ export const register: Register = (on, options) => {
         <Text color={color}>{fmtTimer((endAt ?? now) - since)}</Text>
       )
 
-    // A usage window as a gauge: percent used, the time to its reset where there is room; past its
-    // reset the last reading stays, marked `~` and 過期, never guessed as a fresh window.
-    const usageWindow = (label: string, wd: UsageWindow | undefined, w: number, color: string) => {
-      const wv = windowView(wd, now)
-      if (wv === null) return <Text dimColor>{`${label} —   `}</Text>
-      const ug = gauge(wv.pct, 5)
-      const tail = wv.isStale ? ' 過期' : w >= 56 && wv.resetIn ? ` ⏱ ${wv.resetIn}` : ''
+    // A usage row as the first version drew its quota header: the label, a bar across the line, the
+    // percent in a column of its own, then the time to the reset (or the context's tokens). The rows
+    // of one panel share a label column and a bar width (see meterLayout), so their bars line up.
+    // Past its reset the last reading stays, marked `~` and `stale`; a window not read yet is a dash.
+    const meterRow = (key: string, row: Meter, layout: { labelW: number; barW: number }, color: string, note = '') => {
+      const label = padCells(row.label, layout.labelW)
+      if (row.pct === null) return <Text key={key} dimColor wrap="truncate">{`${label} —`}</Text>
+      const bar = gauge(row.pct, layout.barW, LINE_GLYPHS)
+      const tone = row.isStale ? C.dim : row.pct >= 80 ? C.warn : color
       return (
-        <Text wrap="truncate">
+        <Text key={key} wrap="truncate">
           <Text dimColor>{`${label} `}</Text>
-          <Text color={wv.isStale ? C.dim : wv.pct >= 80 ? C.warn : color}>{ug.on}</Text>
-          <Text color={C.faint}>{ug.off}</Text>
-          <Text dimColor>{` ${wv.isStale ? '~' : ''}${wv.pct}%${tail}  `}</Text>
+          <Text color={tone}>{bar.on}</Text>
+          <Text color={C.faint}>{bar.off}</Text>
+          <Text color={tone} bold={!row.isStale}>{` ${meterPercent(row)}`}</Text>
+          {row.detail ? <Text dimColor>{` ${row.detail}`}</Text> : null}
+          {note ? <Text color={C.amber}>{note}</Text> : null}
         </Text>
       )
+    }
+    // The label column and bar width a panel's rows share; `details` is what follows each percent.
+    const meterLayout = (rows: Meter[], w: number, details = rows.map(r => r.detail)) => {
+      const labelW = Math.max(0, ...rows.map(r => cells(r.label)))
+      return { labelW, barW: meterWidth(w, labelW, details) }
     }
 
     // ---- main
     const effortN = { low: 1, medium: 2, high: 3, xhigh: 4, max: 4 }[m.effort] ?? 0
-    const ctxGauge = u.pct !== null ? gauge(u.pct, 10) : null
-    const mainPanel = (w: number) => (
-      <Box flexDirection="column" borderStyle="round" borderColor={C.main} paddingX={1} width={w}>
-        <Box justifyContent="space-between">
-          <Text color={C.main} bold>
-            {modelName} · 主模型
+    // Claude's windows and Fable, a row each; the context sits apart, at the foot of the box.
+    const usageMeters = [
+      ...u.limits.slice(0, 2).map(l => windowMeter(limitLabel(l.kind), limitWindow(l), now)),
+      ...(fableWindow ? [windowMeter(fb?.isStale ? 'Fable~' : 'Fable', fableWindow, now)] : []),
+    ]
+    const ctxMeter: Meter | null =
+      u.pct !== null
+        ? { label: 'ctx', pct: Math.round(u.pct), isStale: false, detail: u.tokens !== null ? `${kTokens(u.tokens)}/${kTokens(u.window)}` : '' }
+        : null
+    const ctxNote = u.compactions > 0 ? `  ⟲${u.compactions}` : ''
+    const mainMeters = ctxMeter ? [...usageMeters, ctxMeter] : usageMeters
+    const mainPanel = (w: number) => {
+      const layout = meterLayout(mainMeters, w, [...usageMeters.map(r => r.detail), ...(ctxMeter ? [ctxMeter.detail + ctxNote] : [])])
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor={C.main} paddingX={1} width={w}>
+          <Box justifyContent="space-between">
+            <Text color={C.main} bold>
+              {modelName} · main
+            </Text>
+            <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? '● working' : '○ idle'}</Text>
+          </Box>
+          <Text wrap="truncate">
+            <Text dimColor>effort </Text>
+            <Text color={C.main}>{'▮'.repeat(effortN) + '▯'.repeat(4 - effortN)} </Text>
+            <Text color={C.main} bold>
+              {m.effort || '—'}
+            </Text>
+            {m.mode ? <Text dimColor>{`   mode ${m.mode}`}</Text> : null}
+            <Text dimColor>{`   ${m.steps} req`}</Text>
           </Text>
-          <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? '● 工作中' : '○ 閒置'}</Text>
+          {usageMeters.map((row, i) => meterRow(`usage-${i}`, row, layout, C.main))}
+          {m.speed ? <Text dimColor wrap="truncate">{`last req  ${fmtSpeed(m.speed)}`}</Text> : null}
+          {ctxMeter ? meterRow('context', ctxMeter, layout, C.main, ctxNote) : null}
         </Box>
-        <Text wrap="truncate">
-          <Text dimColor>強度 </Text>
-          <Text color={C.main}>{'▮'.repeat(effortN) + '▯'.repeat(4 - effortN)} </Text>
-          <Text color={C.main} bold>
-            {m.effort || '—'}
-          </Text>
-          {m.mode ? <Text dimColor>{`   模式 ${m.mode}`}</Text> : null}
-          <Text dimColor>{`   請求 ${m.steps}`}</Text>
-        </Text>
-        {ctxGauge ? (
-          <Text wrap="truncate">
-            <Text dimColor>上下文 </Text>
-            <Text color={u.pct !== null && u.pct >= 80 ? C.warn : C.main}>{ctxGauge.on}</Text>
-            <Text color={C.faint}>{ctxGauge.off}</Text>
-            <Text bold>{` ${Math.round(u.pct ?? 0)}%`}</Text>
-            {u.tokens !== null ? <Text dimColor>{` ${kTokens(u.tokens)}/${kTokens(u.window)}`}</Text> : null}
-            {u.compactions > 0 ? <Text color={C.amber}>{`  ⟲${u.compactions}`}</Text> : null}
-          </Text>
-        ) : null}
-        {u.costUsd !== null || u.limits.length > 0 ? (
-          <Text wrap="truncate">
-            {u.costUsd !== null ? <Text color={C.text}>{`${fmtUsd(u.costUsd)}   `}</Text> : null}
-            {u.limits.slice(0, 2).map(l => {
-              const lg = gauge(l.pct, 5)
-              // The time to each reset where the line has room for it: both windows fit from 56 columns,
-              // so a wide pane's half column (59 at 120) has them and a 40-column pane keeps its gauges.
-              const resetIn = w >= 56 ? fmtResetIn(l.resetsAt, now) : ''
-              return (
-                <Text wrap="truncate">
-                  <Text dimColor>{`${limitLabel(l.kind)} `}</Text>
-                  <Text color={l.pct >= 80 ? C.warn : C.main}>{lg.on}</Text>
-                  <Text color={C.faint}>{lg.off}</Text>
-                  <Text dimColor>{` ${Math.round(l.pct)}%${resetIn ? ` ⏱ ${resetIn}` : ''}  `}</Text>
-                </Text>
-              )
-            })}
-          </Text>
-        ) : null}
-        {fableWindow ? <Text wrap="truncate">{usageWindow(fb?.isStale ? 'Fable~' : 'Fable', fableWindow, w, C.main)}</Text> : null}
-        {m.speed ? <Text dimColor wrap="truncate">{`上次請求  ${fmtSpeed(m.speed)}`}</Text> : null}
-      </Box>
-    )
+      )
+    }
 
     // ---- architect
     const lastConsult = a.consults[a.consults.length - 1]
@@ -1096,10 +1114,10 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" borderStyle="round" borderColor={C.arch} paddingX={1} width={w}>
           <Box justifyContent="space-between">
             <Text color={C.arch} bold>
-              {cfg.architectLabel} · {advising ? '諮詢中' : '待命'}
+              {cfg.architectLabel} · {advising ? 'advising' : 'on call'}
             </Text>
             <Text>
-              <Text dimColor>諮詢 </Text>
+              <Text dimColor>consults </Text>
               <Text color={C.arch} bold>
                 {a.consults.length}
               </Text>
@@ -1109,11 +1127,11 @@ export const register: Register = (on, options) => {
           {lastConsult ? (
             <Text dimColor wrap="truncate">
               {advising
-                ? `自 ${fmtClock(lastConsult.at)} 起諮詢中`
-                : `上次 ${fmtDuration(now - (lastConsult.endAt ?? lastConsult.at))} 前 · 耗時 ${fmtDuration((lastConsult.endAt ?? now) - lastConsult.at)}`}
+                ? `consulting since ${fmtClock(lastConsult.at)}`
+                : `last ${fmtDuration(now - (lastConsult.endAt ?? lastConsult.at))} ago · took ${fmtDuration((lastConsult.endAt ?? now) - lastConsult.at)}`}
             </Text>
           ) : (
-            <Text dimColor>尚未諮詢</Text>
+            <Text dimColor>not consulted yet</Text>
           )}
           {cfg.moments ? (
             <Box flexWrap="wrap" columnGap={2}>
@@ -1121,11 +1139,11 @@ export const register: Register = (on, options) => {
                 const isOn = lastConsult?.moment === mo
                 return (
                   <Text color={isOn ? C.arch : C.dim} bold={isOn}>
-                    {isOn ? '◆' : '◇'} {MOMENT_LABEL[mo]}
+                    {isOn ? '◆' : '◇'} {mo}
                   </Text>
                 )
               })}
-              <Text color={C.faint}>（推測）</Text>
+              <Text color={C.faint}>(inferred)</Text>
             </Box>
           ) : null}
           {a.lastAdvice ? (
@@ -1148,12 +1166,12 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" borderStyle="round" borderColor={C.gate} paddingX={1} width={w}>
           <Box justifyContent="space-between">
             <Text color={C.gate} bold>
-              {cfg.gateLabel} · 檢查
+              {cfg.gateLabel} · permissions
             </Text>
-            <Text dimColor>{`${s.total} 次`}</Text>
+            <Text dimColor>{`${s.total} checks`}</Text>
           </Box>
           <Box>
-            {strip.length === 0 ? <Text color={C.faint}>尚無檢查</Text> : null}
+            {strip.length === 0 ? <Text color={C.faint}>no checks yet</Text> : null}
             {strip.map(c => (
               <Text color={verdictColor(c)} dimColor={c.inSubagent}>
                 {c.verdict === 'deny' ? '✗' : '■'}
@@ -1162,12 +1180,12 @@ export const register: Register = (on, options) => {
           </Box>
           <Text wrap="truncate">
             <Text color={C.gate}>■</Text>
-            <Text dimColor>{` ${s.rule} 允許  `}</Text>
+            <Text dimColor>{` ${s.rule} allowed  `}</Text>
             <Text color={C.cleared}>■</Text>
             <Text dimColor>{` ${s.cleared} ${decider}  `}</Text>
-            {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} 待決  `}</Text> : null}
-            <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} 拒絕`}</Text>
-            {w >= 80 && g.recent.some(c => c.inSubagent) ? <Text color={C.faint}>{'  暗色：子代理'}</Text> : null}
+            {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} pending  `}</Text> : null}
+            <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} denied`}</Text>
+            {w >= 80 && g.recent.some(c => c.inSubagent) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
           </Text>
           <Box columnGap={2}>
             {(['file', 'shell', 'other'] as const).map((b: Bucket) => {
@@ -1178,7 +1196,7 @@ export const register: Register = (on, options) => {
                   key={`gate-${b}`}
                   plain
                   hotkey={b[0]}
-                  label={`${BUCKET_LABEL[b]} ${n}${open === b ? ' ▾' : ''}`}
+                  label={`${b} ${n}${open === b ? ' ▾' : ''}`}
                   dimColor={n === 0}
                   onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === b ? null : b }))}
                 />
@@ -1192,7 +1210,7 @@ export const register: Register = (on, options) => {
                 .map(c => (
                   <Text wrap="truncate">
                     <Text color={verdictColor(c)}>{c.verdict === 'deny' ? '✗ ' : '■ '}</Text>
-                    <Text color={C.dim}>{`${(c.verdict === 'rule' ? '允許' : c.verdict === 'cleared' ? decider : c.verdict === 'ask' ? '待決' : '拒絕').padEnd(4, '　')} `}</Text>
+                    <Text color={C.dim}>{`${(c.verdict === 'rule' ? 'allowed' : c.verdict === 'cleared' ? decider : c.verdict === 'ask' ? 'pending' : 'denied').padEnd(10)} `}</Text>
                     <Text dimColor={c.inSubagent}>{shorten(c.detail, Math.max(10, w - 18))}</Text>
                   </Text>
                 ))
@@ -1213,15 +1231,15 @@ export const register: Register = (on, options) => {
       const useLanes = cards.length > fit
       const header = (
         <Box justifyContent="space-between" width={w}>
-          <Text bold>{`子代理 · ${running.length} 執行中 · 共 ${cards.length}`}</Text>
-          {cards.length > 0 ? <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} 展開</Text> : null}
+          <Text bold>{`agents · ${running.length} running · ${cards.length} total`}</Text>
+          {cards.length > 0 ? <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} expand</Text> : null}
         </Box>
       )
       if (cards.length === 0) {
         return (
           <Box flexDirection="column" width={w}>
             {header}
-            <Text color={C.faint}>尚無子代理</Text>
+            <Text color={C.faint}>no subagents yet</Text>
           </Box>
         )
       }
@@ -1232,7 +1250,7 @@ export const register: Register = (on, options) => {
         return (
           <Box flexDirection="column" width={w}>
             {header}
-            {cards.length > shown.length ? <Text color={C.faint}>{`+${cards.length - shown.length} 個較早的`}</Text> : null}
+            {cards.length > shown.length ? <Text color={C.faint}>{`+${cards.length - shown.length} earlier`}</Text> : null}
             {shown.map((c, i) => {
               const gm = geo[i]
               const isViewed = viewed === c.id
@@ -1280,11 +1298,11 @@ export const register: Register = (on, options) => {
                     {sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`}
                   </Text>
                   <Text dimColor wrap="truncate">
-                    {c.codex ? 'codex exec' : c.steps > 0 ? `ctx ${kTokens(c.ctx)} · 輸出 ${kTokens(c.out)} · ${c.steps} 步` : '啟動中…'}
+                    {c.codex ? 'codex exec' : c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${c.steps} st` : 'starting…'}
                   </Text>
                   <Box>
                     <Text color={c.lastStop === 'max_tokens' ? C.warn : statusColor(c)}>
-                      {cardW >= 26 ? `${glyph(c)} ${c.lastStop === 'max_tokens' ? 'max_tokens' : statusLabel(c.status)} ` : `${glyph(c)} `}
+                      {cardW >= 26 ? `${glyph(c)} ${c.lastStop === 'max_tokens' ? 'max_tokens' : c.status} ` : `${glyph(c)} `}
                     </Text>
                     <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
                   </Box>
@@ -1304,8 +1322,8 @@ export const register: Register = (on, options) => {
           <Text bold wrap="wrap">
             {expandedCard.description || expandedCard.type}
           </Text>
-          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${statusLabel(expandedCard.status)} · ${expandedCard.steps} 步`}</Text>
-          {expandedCard.tools.length === 0 && !expandedCard.codex ? <Text color={C.faint}>尚無工具呼叫</Text> : null}
+          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
+          {expandedCard.tools.length === 0 && !expandedCard.codex ? <Text color={C.faint}>no tool calls yet</Text> : null}
           {expandedCard.tools.map(n => (
             <Text color={n.isError ? C.warn : C.text} wrap="truncate">
               {`${n.isError ? '✗' : '·'} ${n.text}`}
@@ -1326,8 +1344,8 @@ export const register: Register = (on, options) => {
       const dots = lp.slice(-Math.max(4, w - 38))
       return (
         <Box width={w}>
-          <Text bold>其他迴圈 </Text>
-          <Text dimColor>{`${lp.length} 個 · ${active} 進行中  `}</Text>
+          <Text bold>other loops </Text>
+          <Text dimColor>{`${lp.length} seen · ${active} active  `}</Text>
           {dots.map(l => (
             <Text color={isLoopActive(l, now) ? C.agent : l.isDone ? C.dim : C.faint}>{isLoopActive(l, now) ? '●' : l.isDone ? '✓' : '○'}</Text>
           ))}
@@ -1342,25 +1360,25 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" borderStyle="round" borderColor={C.main} borderDimColor={!m.isRunning && !isReview} paddingX={1} width={w}>
           {m.isRunning ? (
             <Box>
-              <Text color={C.main} wrap="truncate">{`◐ 回到 ${modelName} · 本回合 `}</Text>
+              <Text color={C.main} wrap="truncate">{`◐ back to ${modelName.toLowerCase()} · turn `}</Text>
               <Box flexShrink={0}>{clock('turn-clock', t.startedAt, null, C.main)}</Box>
-              {w >= 60 ? <Text dimColor wrap="truncate">{` · 編輯 ${t.edits} · 錯誤 ${t.errors}`}</Text> : null}
+              {w >= 60 ? <Text dimColor wrap="truncate">{` · ${plural(t.edits, 'edit')} · ${plural(t.errors, 'error')}`}</Text> : null}
             </Box>
           ) : r ? (
             <Text wrap="truncate">
               <Text color={r.reason === 'answer' ? C.gate : C.warn}>{r.reason === 'answer' ? '✓ ' : '✗ '}</Text>
               <Text>{receiptText(r)}</Text>
-              {r.costDelta !== null ? <Text color={C.main}>{` · +${fmtUsd(r.costDelta)}`}</Text> : null}
             </Text>
           ) : (
-            <Text color={C.faint}>尚無完成的回合</Text>
+            <Text color={C.faint}>no turn finished yet</Text>
           )}
-          {isReview ? <Text color={C.arch}>{`${cfg.architectLabel.toLowerCase()} 完成前審查中（推測）`}</Text> : null}
+          {isReview ? <Text color={C.arch}>{`${cfg.architectLabel.toLowerCase()} reviewing before done (inferred)`}</Text> : null}
         </Box>
       )
     }
 
-    // ---- Codex usage: percent used per window, as the main box shows Claude's
+    // ---- Codex usage: percent used per window, a row each, as the main box shows Claude's
+    const codexMeters = cx ? [windowMeter('5h', cx.fiveHour, now), windowMeter('weekly', cx.weekly, now)] : []
     const codexPanel = (w: number) =>
       cx ? (
         <Box flexDirection="column" borderStyle="round" borderColor={C.codex} paddingX={1} width={w}>
@@ -1369,13 +1387,10 @@ export const register: Register = (on, options) => {
               {plain(`Codex · ${cx.model ?? '—'}${cx.effort ? ` · ${cx.effort}` : ''}`)}
             </Text>
             <Box flexShrink={0}>
-              <Text dimColor>額度 · 已用</Text>
+              <Text dimColor>quota · used</Text>
             </Box>
           </Box>
-          <Text wrap="truncate">
-            {usageWindow('5小時', cx.fiveHour, w, C.codex)}
-            {usageWindow('每週', cx.weekly, w, C.codex)}
-          </Text>
+          {codexMeters.map((row, i) => meterRow(`codex-${i}`, row, meterLayout(codexMeters, w), C.codex))}
           {cx.note ? (
             <Text dimColor wrap="truncate">
               {plain(cx.note)}
@@ -1392,7 +1407,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column" borderStyle="round" borderColor={C.branch} paddingX={1} width={w}>
           <Box justifyContent="space-between" columnGap={1}>
-            <Text color={C.branch} bold wrap="truncate">{`分支 · ${gs.branch}`}</Text>
+            <Text color={C.branch} bold wrap="truncate">{`branch · ${gs.branch}`}</Text>
             <Box flexShrink={0}>
               <Text dimColor>{syncLabel(gs)}</Text>
             </Box>
@@ -1409,7 +1424,7 @@ export const register: Register = (on, options) => {
               key="git-unreviewed"
               plain
               hotkey="u"
-              label={`${v.gitOpen ? '▾' : '▸'} 未審清單`}
+              label={`${v.gitOpen ? '▾' : '▸'} unreviewed files`}
               onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gitOpen: !normalize(DEFAULT_VIEW, x).gitOpen }))}
             />
           ) : null}
@@ -1420,16 +1435,19 @@ export const register: Register = (on, options) => {
               </Text>
             </Box>
           ))}
-          {hidden > 0 ? <Text dimColor>{`  … 另有 ${hidden} 個`}</Text> : null}
+          {hidden > 0 ? <Text dimColor>{`  … ${hidden} more`}</Text> : null}
         </Box>
       )
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    // The main box's speed line and the gap above the log are a row each.
-    const codexRows = cx ? 4 + (cx.note ? 1 : 0) : 0
+    // The main box: its frame, title and effort line, then a row per usage window, the context and the
+    // speed line. The Codex box: its frame and title, a row per window, and its note. The gap above the
+    // log is a row.
+    const mainRows = 4 + mainMeters.length + (m.speed ? 1 : 0)
+    const codexRows = cx ? 3 + codexMeters.length + (cx.note ? 1 : 0) : 0
     const gitRows = gs ? 4 + (canUnfold(gs) ? 1 : 0) + pathRows(gs, v.gitOpen) : 0
-    const used = 2 + (banner ? 1 : 0) + 5 + (m.speed ? 1 : 0) + (fableWindow ? 1 : 0) + 1 + codexRows + gitRows + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + (banner ? 1 : 0) + mainRows + 1 + codexRows + gitRows + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1437,8 +1455,8 @@ export const register: Register = (on, options) => {
       l.kind === 'error' ? C.warn : l.kind === 'consult' ? C.arch : l.who === 'main' ? C.main : l.who === 'gate' ? C.gate : l.who === 'you' ? C.text : C.agent
     const logPanel = (w: number) => (
       <Box flexDirection="column" borderStyle="round" borderColor={C.faint} paddingX={1} marginTop={1} width={w}>
-        <Text dimColor>{viewed ? '工作紀錄 · 此子代理' : '工作紀錄'}</Text>
-        {shownLines.length === 0 ? <Text color={C.faint}>尚無紀錄</Text> : null}
+        <Text dimColor>{viewed ? 'session log · this agent' : 'session log'}</Text>
+        {shownLines.length === 0 ? <Text color={C.faint}>nothing yet</Text> : null}
         {shownLines.map(l => (
           <Box>
             <Box width={9} flexShrink={0}>
@@ -1446,7 +1464,7 @@ export const register: Register = (on, options) => {
             </Box>
             <Box width={13} flexShrink={0}>
               <Text color={colorOf(l)} bold wrap="truncate">
-                {whoLabel(l.who)}
+                {l.who}
               </Text>
             </Box>
             <Text color={l.kind === 'error' ? C.warn : C.text} wrap="truncate">
@@ -1519,7 +1537,7 @@ export const register: Register = (on, options) => {
             return (
               <Svg
                 source={`<svg xmlns="http://www.w3.org/2000/svg" width="${pxW}" height="${svgH}" viewBox="0 0 ${pxW} ${svgH}">${rects}</svg>`}
-                alt={`${cards.length} 個子代理的時間軸`}
+                alt={`${cards.length} agents on a time axis`}
                 width={pxW}
                 height={svgH}
               />
@@ -1531,13 +1549,14 @@ export const register: Register = (on, options) => {
     const isMini = layout === 'mini' || (layout === 'auto' && e.props.placement === 'inline')
     if (isMini) {
       // Codex and the branch share one row; while it shows, one agent row fewer keeps the summary at 8.
+      const windows = claudeWindows(u.limits, now)
       const vitals = [
         fableWindow ? windowShort(fb?.isStale ? 'Fable~' : 'Fable', fableWindow, now) : null,
-        cx ? `Codex ${windowShort('5小時', cx.fiveHour, now)} · ${windowShort('每週', cx.weekly, now)}` : null,
+        cx ? `Codex ${windowShort('5h', cx.fiveHour, now)} · ${windowShort('weekly', cx.weekly, now)}` : null,
         gs ? `⎇ ${gs.branch} ${unreviewedLabel(gs)} · ${changedLabel(gs)}` : null,
       ].filter(Boolean)
       const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, Math.max(1, 3 - (vitals.length > 0 ? 1 : 0) - (banner ? 1 : 0)))
-      const counts = ` ${s.rule} 允許 · ${s.cleared} ${decider}${s.ask > 0 ? ` · ${s.ask} 待決` : ''} · ${s.deny} 拒絕`
+      const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
       const strip = g.recent.slice(-Math.max(4, W - cells(cfg.gateLabel) - 1 - cells(counts)))
       const mg = u.pct !== null ? gauge(u.pct, 6) : null
       return (
@@ -1546,14 +1565,14 @@ export const register: Register = (on, options) => {
             <Text color={C.main} bold>
               {modelName}
             </Text>
-            <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? ' ● 工作中' : ' ○ 閒置'}</Text>
-            {mg ? <Text dimColor> · 上下文 </Text> : null}
+            <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? ' ● working' : ' ○ idle'}</Text>
+            {mg ? <Text dimColor> · ctx </Text> : null}
             {mg ? <Text color={(u.pct ?? 0) >= 80 ? C.warn : C.main}>{mg.on}</Text> : null}
             {mg ? <Text color={C.faint}>{mg.off}</Text> : null}
             {mg ? <Text>{` ${Math.round(u.pct ?? 0)}%`}</Text> : null}
             {u.compactions > 0 ? <Text color={C.amber}>{` ⟲${u.compactions}`}</Text> : null}
-            {u.costUsd !== null ? <Text dimColor>{` · ${fmtUsd(u.costUsd)}`}</Text> : null}
-            {showArchitect ? <Text color={C.arch}>{` · ${cfg.architectLabel.toLowerCase()} ${advising ? '諮詢中' : a.consults.length}`}</Text> : null}
+            {windows ? <Text dimColor>{` · ${windows}`}</Text> : null}
+            {showArchitect ? <Text color={C.arch}>{` · ${cfg.architectLabel.toLowerCase()} ${advising ? 'advising' : a.consults.length}`}</Text> : null}
           </Text>
           {banner ? (
             <Text color={C.warn} bold wrap="truncate">
@@ -1589,12 +1608,12 @@ export const register: Register = (on, options) => {
             </Box>
           ))}
           {cards.length > live.length ? (
-            <Text color={C.faint} wrap="truncate">{`+${cards.length - live.length} 個子代理 · /dashboard layout compact 看全部`}</Text>
+            <Text color={C.faint} wrap="truncate">{`+${cards.length - live.length} more agents · /dashboard layout compact for all`}</Text>
           ) : null}
-          {lp.length > 0 ? <Text dimColor>{`其他迴圈 ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} 進行中`}</Text> : null}
+          {lp.length > 0 ? <Text dimColor>{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
           {!m.isRunning && r ? (
             <Text dimColor wrap="truncate">
-              {`${receiptText(r)}${r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''}`}
+              {receiptText(r)}
             </Text>
           ) : null}
         </Box>
@@ -1603,12 +1622,12 @@ export const register: Register = (on, options) => {
 
     const legend = fitLegend(
       [
-        { label: '主模型', color: C.main },
-        { label: '子代理', color: C.agent },
+        { label: 'main', color: C.main },
+        { label: 'agents', color: C.agent },
         { label: cfg.gateLabel.toLowerCase(), color: C.gate },
         ...(showArchitect ? [{ label: cfg.architectLabel.toLowerCase(), color: C.arch }] : []),
         ...(panels.includes('codex') ? [{ label: 'Codex', color: C.codex }] : []),
-        ...(panels.includes('git') ? [{ label: '分支', color: C.branch }] : []),
+        ...(panels.includes('git') ? [{ label: 'branch', color: C.branch }] : []),
       ],
       W,
     )
@@ -1632,10 +1651,10 @@ export const register: Register = (on, options) => {
             <Text>CC DASHBOARD</Text>
             <Text color={C.dim}> · </Text>
             <Text color={C.main}>{modelName.toUpperCase()}</Text>
-            <Text>{m.isRunning ? ' 工作中' : ' 閒置'}</Text>
+            <Text>{m.isRunning ? ' WORKS' : ' IDLE'}</Text>
             {showArchitect ? <Text color={C.dim}> · </Text> : null}
             {showArchitect ? <Text color={C.arch}>{cfg.architectLabel}</Text> : null}
-            {showArchitect ? <Text>{advising ? ' 諮詢中' : ' 待命'}</Text> : null}
+            {showArchitect ? <Text>{advising ? ' ADVISING' : ' ON CALL'}</Text> : null}
           </Text>
         </Box>
         <Box justifyContent="center" columnGap={2}>

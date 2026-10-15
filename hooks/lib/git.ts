@@ -1,7 +1,7 @@
 import type { GitSnap } from '../../types'
 import { plain } from './plain'
 
-/** How many unreviewed paths the 分支 panel can unfold. */
+/** How many unreviewed paths the branch panel can unfold. */
 export const UNREVIEWED_SHOWN = 20
 
 // The work tree as `git status --porcelain=v2 --branch -z -uall` reports it:
@@ -133,7 +133,7 @@ export const isPersonPrompt = (originKind: string): boolean =>
   originKind === 'composer' || originKind === 'bridge' || originKind === 'sdk'
 
 /**
- * The 分支 panel's figures from a status, its hashes and what the last review
+ * The branch panel's figures from a status, its hashes and what the last review
  * saw. When either the hashes or the review record could not be had, how many
  * files are unreviewed is unknown (absent), never zero.
  */

@@ -73,19 +73,19 @@ test('with nobody waiting there is no banner text', () => {
 })
 
 test('the banner names the longest-waiting session, its reason and how long ago the wait began', () => {
-  expect(bannerText([waiting()], NOW)).toBe('! 等你回應：jev-router-41 權限 2分前')
-  expect(bannerText([waiting({ reason: 'question', sinceMs: NOW - 5000 })], NOW)).toBe('! 等你回應：jev-router-41 提問 剛剛')
-  expect(bannerText([waiting({ sinceMs: NOW - 3 * 3_600_000 })], NOW)).toBe('! 等你回應：jev-router-41 權限 3時前')
+  expect(bannerText([waiting()], NOW)).toBe('! waiting on you: jev-router-41 permission 2m ago')
+  expect(bannerText([waiting({ reason: 'question', sinceMs: NOW - 5000 })], NOW)).toBe('! waiting on you: jev-router-41 question just now')
+  expect(bannerText([waiting({ sinceMs: NOW - 3 * 3_600_000 })], NOW)).toBe('! waiting on you: jev-router-41 permission 3h ago')
 })
 
 test('more sessions waiting add how many more there are', () => {
   const rows = [waiting(), waiting({ id: 'b', name: 'other' }), waiting({ id: 'c', name: 'third' })]
 
-  expect(bannerText(rows, NOW)).toBe('! 等你回應：jev-router-41 權限 2分前 · 另有 2')
+  expect(bannerText(rows, NOW)).toBe('! waiting on you: jev-router-41 permission 2m ago · +2 more')
 })
 
 test('a session name from the registry cannot carry control characters or bidirectional marks into the banner', () => {
   const text = bannerText([waiting({ name: 'evil\u001b[31m‮name' })], NOW)
 
-  expect(text).toBe('! 等你回應：evil [31m name 權限 2分前')
+  expect(text).toBe('! waiting on you: evil [31m name permission 2m ago')
 })

@@ -7,6 +7,7 @@ import {
   DEFAULT_TURN,
   afterCall,
   applyStep,
+  cells,
   consultTimeline,
   describeInput,
   endConsult,
@@ -163,8 +164,8 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect((b?.before ?? 0) + (b?.bar ?? 0) + (b?.after ?? 0)).toBe(20)
   expect([logRows(10, 40), logRows(50, 40), logRows(200, 40)]).toEqual([4, 7, 8])
   expect(fitLegend([{ label: 'main' }, { label: 'agents' }, { label: 'architect' }], 20).map(x => x.label)).toEqual(['main', 'agents'])
-  expect(limitLabel('five_hour')).toBe('5小時')
-  expect(limitLabel('seven_day_opus')).toBe('7天 opus')
+  expect(limitLabel('five_hour')).toBe('5h')
+  expect(limitLabel('seven_day_opus')).toBe('7d opus')
   expect(prettyModel('claude-opus-5-5[1m]')).toBe('Opus 5.5 1M')
   expect(prettyModel('us.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe('Sonnet 4.5')
   expect(prettyModel('claude-3-5-haiku-20241022')).toBe('Haiku 3.5')
@@ -181,10 +182,9 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(adviceLine('[Subagent hand-back] header\n\n**Fix card overflow first**')).toBe('Fix card overflow first')
   expect(adviceLine('')).toBe('')
   expect(promptLine('<agent-message from="a1492260715f3be7b"> [Subagent hand-back]')).toEqual({ who: 'engine', text: 'agent message from a1492260' })
-  expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 5 }, { durationMs: 1, agentsSince: 0, costNow: 5, reason: 'answer' }).costDelta).toBe(null)
   expect(titleLines('Write tinyqueue test suite', 13, 16)).toEqual(['Write', 'tinyqueue test…'])
   expect(titleLines('Short', 13, 16)).toEqual(['Short', ''])
-  expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 1, edits: 2 }, { durationMs: 1000, agentsSince: 3, costNow: 1.5, reason: 'answer' }).costDelta).toBe(0.5)
+  expect(receiptOf({ ...DEFAULT_TURN, edits: 2 }, { durationMs: 1000, agentsSince: 3, reason: 'answer' })).toEqual({ durationMs: 1000, agents: 3, edits: 2, errors: 0, reason: 'answer' })
 })
 
 test('a request\'s speed: time to its first piece, then output tokens per second to the stop', () => {
@@ -192,8 +192,8 @@ test('a request\'s speed: time to its first piece, then output tokens per second
   expect(stepSpeed(1000, null, 3800, 120)).toBe(null) // no response arrived
   expect(stepSpeed(1000, 1800, 1800, 120)?.tokPerS).toBe(null) // nothing to divide by
   expect(stepSpeed(1000, 1800, 3800, null)?.tokPerS).toBe(null)
-  expect(fmtSpeed({ ttftMs: 800, tokPerS: 60.4 })).toBe('首字 0.8s · 60 tok/s')
-  expect(fmtSpeed({ ttftMs: 1250, tokPerS: null })).toBe('首字 1.3s')
+  expect(fmtSpeed({ ttftMs: 800, tokPerS: 60.4 })).toBe('ttft 0.8s · 60 tok/s')
+  expect(fmtSpeed({ ttftMs: 1250, tokPerS: null })).toBe('ttft 1.3s')
 })
 
 test('a window keeps its reset time, drawn as the time left', () => {
@@ -245,10 +245,10 @@ test('a fresh session draws on every surface and width, empty panels hidden', as
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     for (const cols of [40, 60, 86, 120]) {
       const ui = await $.ui.mount({ ...pane(cols), surface })
-      expect(await ui.find({ text: /· 主模型$/ })).toBeDefined()
-      expect(await ui.find({ text: /工作紀錄/ })).toBeDefined()
-      expect(await ui.find({ text: /子代理 ·/ })).toBeUndefined() // no subagents: no agents panel
-      expect(await ui.find({ text: /權限 · 檢查/ })).toBeUndefined() // no checks yet: no gate panel
+      expect(await ui.find({ text: /· main$/ })).toBeDefined()
+      expect(await ui.find({ text: /session log/ })).toBeDefined()
+      expect(await ui.find({ text: /agents ·/ })).toBeUndefined() // no subagents: no agents panel
+      expect(await ui.find({ text: /GATE · permissions/ })).toBeUndefined() // no checks yet: no gate panel
       await ui.unmount()
     }
   }
@@ -266,9 +266,9 @@ test('inline above the prompt, the pane is a summary of at most 8 rows', async (
     const ui = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface })
     const root = (await ui.drawn()) as { children?: unknown[] }
     expect((root.children ?? []).filter(Boolean).length <= 8).toBe(true)
-    expect(await ui.find({ text: /\+2 個子代理/ })).toBeDefined()
-    expect(await ui.find({ text: /1 允許/ })).toBeDefined()
-    expect(await ui.find({ text: /工作紀錄/ })).toBeUndefined()
+    expect(await ui.find({ text: /\+2 more agents/ })).toBeDefined()
+    expect(await ui.find({ text: /1 allowed/ })).toBeDefined()
+    expect(await ui.find({ text: /session log/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -288,7 +288,7 @@ test('/clear starts the pane fresh', async ($, on) => {
 test('colours come from the theme by default, raw hex only when asked', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  const title = await ui.find({ text: /· 主模型$/ })
+  const title = await ui.find({ text: /· main$/ })
   expect(title?.props.color).toBe('claude')
   await ui.unmount()
 })
@@ -296,7 +296,7 @@ test('colours come from the theme by default, raw hex only when asked', async ($
 test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'pastel' } }, async ($, on) => {
   engine(on)
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect((await ui.find({ text: /· 主模型$/ }))?.props.color).toBe('#7dd3fc')
+  expect((await ui.find({ text: /· main$/ }))?.props.color).toBe('#7dd3fc')
   await ui.unmount()
 })
 
@@ -319,7 +319,7 @@ test('subagents become cards, then swimlanes past the card limit; a card expands
   await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
   for (const surface of ['terminal', 'desktop'] as const) {
     const lanesUi = await $.ui.mount({ ...pane(64), surface })
-    expect(await lanesUi.find({ text: /共 4/ })).toBeDefined()
+    expect(await lanesUi.find({ text: /4 total/ })).toBeDefined()
     expect(await lanesUi.find({ text: /━/ })).toBeDefined()
     await lanesUi.unmount()
   }
@@ -339,13 +339,13 @@ test('the server-side advisor is read from assistant rows: consulting, then on c
       .catch(() => undefined) // the test has no transcript to store rows in
   await row([{ type: 'server_tool_use', id: 'srv1', name: 'advisor', input: {} }])
   const mid = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await mid.find({ text: /顧問 · 諮詢中/ })).toBeDefined()
-  expect(await mid.find({ text: /◆ 規劃前/ })).toBeDefined()
+  expect(await mid.find({ text: /ARCHITECT · advising/ })).toBeDefined()
+  expect(await mid.find({ text: /◆ before a plan/ })).toBeDefined()
   await mid.unmount()
 
   await row([{ type: 'advisor_tool_result', tool_use_id: 'srv1', content: { type: 'advisor_redacted_result' } }])
   const after = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await after.find({ text: /顧問 · 待命/ })).toBeDefined()
+  expect(await after.find({ text: /ARCHITECT · on call/ })).toBeDefined()
   expect(await after.find({ text: /^1$/ })).toBeDefined()
   await after.unmount()
 })
@@ -356,8 +356,8 @@ test('the gate strip fills from checks and a row opens its redacted drill-down',
   await $.tool.check({ tool: 'Read', input: { file_path: '/a/b.ts' }, tool_use_id: 'k1' })
   await $.tool.check({ tool: 'Bash', input: { command: 'curl -H "Authorization: Bearer abcdefgh12345" api' }, tool_use_id: 'k2' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await ui.find({ text: /2 次/ })).toBeDefined()
-  expect(await ui.find({ text: /1 待決/ })).toBeDefined()
+  expect(await ui.find({ text: /2 checks/ })).toBeDefined()
+  expect(await ui.find({ text: /1 pending/ })).toBeDefined()
   await ui.press({ key: 'gate-shell' })
   expect(await ui.find({ text: /Authorization: Bearer •••/ })).toBeDefined()
   expect(await ui.find({ text: /abcdefgh12345/ })).toBeUndefined()
@@ -371,9 +371,9 @@ test('config changes labels, hides panels and turns the moments off', { options:
   await $.turn.start({ text: 'review it', turnId: 'T3' })
   await $.agent.spawn(spawn('fable-advisor:fable-advisor', 'final review'))
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await ui.find({ text: /REVIEWER · 諮詢中/ })).toBeDefined()
-  expect(await ui.find({ text: /權限 · 檢查/ })).toBeUndefined()
-  expect(await ui.find({ text: /規劃前/ })).toBeUndefined()
+  expect(await ui.find({ text: /REVIEWER · advising/ })).toBeDefined()
+  expect(await ui.find({ text: /GATE · permissions/ })).toBeUndefined()
+  expect(await ui.find({ text: /before a plan/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -399,17 +399,17 @@ test('a consult whose start and result share one row closes, and its review flag
     })
     .catch(() => undefined)
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await ui.find({ text: /顧問 · 待命/ })).toBeDefined()
-  expect(await ui.find({ text: /◆ 完成前/ })).toBeDefined()
-  expect(await ui.find({ text: /完成前審查中/ })).toBeUndefined()
+  expect(await ui.find({ text: /ARCHITECT · on call/ })).toBeDefined()
+  expect(await ui.find({ text: /◆ before done/ })).toBeDefined()
+  expect(await ui.find({ text: /reviewing before done/ })).toBeUndefined()
   await ui.unmount()
 })
 
 test('with no architect anywhere, the panel, legend entry and status field stay hidden', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await ui.find({ text: /顧問/ })).toBeUndefined()
-  expect(await ui.find({ text: /^ 顧問$/ })).toBeUndefined()
+  expect(await ui.find({ text: /architect/i })).toBeUndefined()
+  expect(await ui.find({ text: /^ architect$/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -443,28 +443,48 @@ test("a background architect's advice is read from its hand-back", async ($, on)
   await ui.unmount()
 })
 
-test('each rate-limit window shows the time to its reset where the main panel has room', async ($, on) => {
+// The drawing as lines of text, one per Text node that sits in a Box: what each row reads.
+type Drawn = { type?: string; children?: unknown[] } | string | null | undefined
+const textOf = (n: Drawn): string => (n == null ? '' : typeof n === 'string' ? n : (n.children ?? []).map(c => textOf(c as Drawn)).join(''))
+const drawnLines = (n: Drawn): string[] =>
+  n == null || typeof n === 'string' ? [] : n.type === 'Text' ? [textOf(n)] : (n.children ?? []).flatMap(c => drawnLines(c as Drawn))
+
+test('each rate-limit window has a row of its own with the time to its reset; the context row sits apart, at the foot', async ($, on) => {
   engine(on)
   on('session.measure', (_$, e) => ({ changed: e.changed }))
+  on('session.compact', (_$, e) => ({ messages: e.messages }))
   const at = (ms: number) => new Date(ms).toISOString()
   await $.session.measure({
-    context: { window: 200_000 },
+    context: { window: 200_000, tokens: 116_000, percent: 58 },
     rateLimits: [
       { kind: 'five_hour', percentUsed: 19, resetsAt: at(3 * 3_600_000 + 10 * 60_000) },
       { kind: 'seven_day', percentUsed: 3, resetsAt: at(4 * 86_400_000 + 2 * 3_600_000) },
     ],
-    changed: ['rateLimits'],
-  })
-  for (const cols of [64, 120]) {
+    changed: ['rateLimits', 'context'],
+  } as never)
+  const rows = async (cols: number) => {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
-    expect(await ui.find({ text: /19% ⏱ 3h10m/ })).toBeDefined()
-    expect(await ui.find({ text: /3% ⏱ 4d2h/ })).toBeDefined()
+    const lines = drawnLines((await ui.drawn()) as Drawn)
     await ui.unmount()
+    const at = (re: RegExp) => lines.findIndex(l => re.test(l))
+    return { lines, five: at(/^5h +━+─* +19% ⏱ 3h10m$/), week: at(/^7d +━*─+ +3% ⏱ 4d2h$/), context: at(/^ctx +━+─+ +58% 116k\/200k( +⟲1)?$/) }
   }
-  const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
-  expect(await narrow.find({ text: /19%/ })).toBeDefined()
-  expect(await narrow.find({ text: /⏱ / })).toBeUndefined() // no room: the gauges stay whole
-  await narrow.unmount()
+  // At 120 columns the pane is wide and the main box takes half of it.
+  const panelOf = (cols: number) => (cols >= 110 ? Math.floor((cols - 2) / 2) : cols)
+  for (const compacted of [false, true]) {
+    if (compacted) await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never)
+    for (const cols of [40, 64, 120]) {
+      const { lines, five, week, context } = await rows(cols)
+      expect([five >= 0, week === five + 1, context > week]).toEqual([true, true, true])
+      expect((lines[context] ?? '').endsWith('⟲1')).toBe(compacted)
+      // The bars share a column, a compaction note or not: each row's bar starts and ends where the others do.
+      const shown = [five, week, context].map(i => lines[i] ?? '')
+      expect(new Set(shown.map(l => l.match(/[━─]+/)?.[0].length)).size).toBe(1)
+      expect(new Set(shown.map(l => l.indexOf('%'))).size).toBe(1)
+      // Every row fits inside the box's frame and padding.
+      expect(shown.every(l => cells(l) <= panelOf(cols) - 4)).toBe(true)
+    }
+  }
 })
 
 test("the main box shows the last request's time to first token and decode speed", async ($, on) => {
@@ -479,7 +499,7 @@ test("the main box shows the last request's time to first token and decode speed
     return { turnId: 'S1', index: 0, answer: 'hello', toolUses: [], stopReason: 'end_turn' as const, usage }
   })
   const before = await $.ui.mount({ ...pane(40), surface: 'terminal' })
-  expect(await before.find({ text: /首字/ })).toBeUndefined() // nothing measured yet: no line
+  expect(await before.find({ text: /ttft/ })).toBeUndefined() // nothing measured yet: no line
   await before.unmount()
   const s = $.turn.step({ turnId: 'S1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
   const first = s.next()
@@ -492,7 +512,7 @@ test("the main box shows the last request's time to first token and decode speed
   await s.result
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
-    expect(await ui.find({ text: /首字 0\.8s · 60 tok\/s/ })).toBeDefined()
+    expect(await ui.find({ text: /ttft 0\.8s · 60 tok\/s/ })).toBeDefined()
     await ui.unmount()
   }
 })

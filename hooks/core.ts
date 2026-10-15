@@ -32,7 +32,6 @@ export const DEFAULT_USAGE: Usage = {
   pct: null,
   tokens: null,
   window: 0,
-  costUsd: null,
   limits: [],
   compactions: 0,
   lastCompactAt: null,
@@ -40,7 +39,7 @@ export const DEFAULT_USAGE: Usage = {
 export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], lastAdvice: '' }
 const ZERO: Tally = { rule: 0, ask: 0, cleared: 0, deny: 0 }
 export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO } }
-export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0, costAtStart: null }
+export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0 }
 export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null, gitOpen: false }
 export const DEFAULT_ROSTER: Roster = { architectTypes: [] }
 
@@ -109,6 +108,8 @@ export type Config = {
   palette: Palette
   openOnStart: boolean
   statusLine: boolean
+  /** The share of the terminal's width the dock asks for in the fullscreen layout, in percent. */
+  dockPercent: number
 }
 
 const safeRegExp = (source: string, fallback: string) => {
@@ -129,10 +130,11 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     .filter((p): p is Panel => (PANELS as readonly string[]).includes(p))
   const layout = str('layout', 'auto')
   const max = typeof o.maxCards === 'number' ? Math.round(o.maxCards) : 3
+  const dock = typeof o.dockPercent === 'number' && Number.isFinite(o.dockPercent) ? Math.round(o.dockPercent) : DOCK_PERCENT
   return {
     architect: safeRegExp(str('architectPattern', ''), 'advisor|architect'),
-    architectLabel: str('architectLabel', '顧問'),
-    gateLabel: str('gateLabel', '權限'),
+    architectLabel: str('architectLabel', 'ARCHITECT'),
+    gateLabel: str('gateLabel', 'GATE'),
     panels: panels.length > 0 ? [...new Set(panels)] : [...PANELS],
     motion: str('motion', 'while-active') !== 'off',
     moments: bool('moments', true),
@@ -142,8 +144,23 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     palette: str('palette', 'theme') === 'pastel' ? 'pastel' : 'theme',
     openOnStart: bool('openOnStart', true),
     statusLine: bool('statusLine', true),
+    dockPercent: Math.min(DOCK_PERCENT_MAX, Math.max(DOCK_PERCENT_MIN, dock)),
   }
 }
+
+// ---------------------------------------------------------------- dock
+
+const DOCK_PERCENT = 50
+const DOCK_PERCENT_MIN = 20
+const DOCK_PERCENT_MAX = 80
+/** The cells the dock's frame takes beside its body: the divider and the edge. */
+const DOCK_FRAME_COLUMNS = 2
+/** The narrowest body the pane lays out for; the drawing never goes below it either. */
+export const DOCK_MIN_COLUMNS = 40
+
+/** The body columns to ask the dock for: `percent` of the terminal's width, less the frame. */
+export const dockColumns = (terminalColumns: number, percent: number) =>
+  Math.max(DOCK_MIN_COLUMNS, Math.round((terminalColumns * percent) / 100) - DOCK_FRAME_COLUMNS)
 
 // ---------------------------------------------------------------- palette
 
@@ -231,17 +248,8 @@ export const fmtTimer = (ms: number) => {
 
 export const fmtClock = (ms: number) => (ms > 0 ? new Date(ms).toTimeString().slice(0, 8) : '--:--:--')
 
-/** The pane's words for the inferred consult moments, which state keeps in English. */
-export const MOMENT_LABEL: Record<Moment, string> = { 'before a plan': '規劃前', 'error repeats': '連續錯誤', 'before done': '完成前' }
-
-/** An agent's status in the pane's words. */
-export const statusLabel = (status: string) =>
-  ({ running: '執行中', done: '完成', failed: '失敗', stopped: '已停止' })[status] ?? status
-
-/** The log's speakers in the pane's words; an agent's own title is shown as it is. */
-export const whoLabel = (who: string) => ({ main: '主模型', gate: '權限', you: '你', engine: '引擎' })[who] ?? who
-
-export const fmtUsd = (n: number) => (n >= 100 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`)
+/** `1 error`, `2 errors`. */
+export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /**
  * How fast a request answered, from three readings of the clock: when it was sent, when its first
@@ -257,15 +265,18 @@ export const stepSpeed = (sentAt: number, firstAt: number | null, stopAt: number
   }
 }
 
-/** `首字 0.8s · 42 tok/s`; the rate is left off when it is unknown. */
+/** `ttft 0.8s · 42 tok/s`; the rate is left off when it is unknown. */
 export const fmtSpeed = (s: { ttftMs: number; tokPerS: number | null }) =>
-  `首字 ${(s.ttftMs / 1000).toFixed(1)}s` + (s.tokPerS !== null ? ` · ${Math.round(s.tokPerS)} tok/s` : '')
+  `ttft ${(s.ttftMs / 1000).toFixed(1)}s` + (s.tokPerS !== null ? ` · ${Math.round(s.tokPerS)} tok/s` : '')
 
-/** A gauge of `width` cells: ▰ filled, ▱ empty. */
-export const gauge = (pct: number, width: number) => {
+/** A gauge of `width` cells: ▰ filled, ▱ empty, or in the glyphs given. */
+export const gauge = (pct: number, width: number, [filled, empty]: readonly [string, string] = ['▰', '▱']) => {
   const full = Math.max(0, Math.min(width, Math.round((pct / 100) * width)))
-  return { on: '▰'.repeat(full), off: '▱'.repeat(width - full) }
+  return { on: filled.repeat(full), off: empty.repeat(Math.max(0, width - full)) }
 }
+
+/** The usage rows' glyphs, as the first version drew its quota bars: ━ used, ─ the rest. */
+export const LINE_GLYPHS = ['━', '─'] as const
 
 /** A rate-limit reading as the pane keeps it, its ISO reset time turned into ms since the epoch. */
 export const limitOf = (r: { kind: string; percentUsed: number; resetsAt?: string }) => {
@@ -283,11 +294,11 @@ export const fmtResetIn = (resetsAt: number | null | undefined, now: number) => 
   return h > 0 ? `${h}h${String(m % 60).padStart(2, '0')}m` : `${m}m`
 }
 
-/** A rate-limit window's short name: `five_hour` → `5小時`, `seven_day_opus` → `7天 opus`. */
+/** A rate-limit window's short name: `five_hour` → `5h`, `seven_day_opus` → `7d opus`. */
 export const limitLabel = (kind: string) =>
   kind
-    .replace(/five[_ -]?hours?/i, '5小時')
-    .replace(/seven[_ -]?days?/i, '7天')
+    .replace(/five[_ -]?hours?/i, '5h')
+    .replace(/seven[_ -]?days?/i, '7d')
     .replace(/[_-]+/g, ' ')
     .trim()
 
@@ -421,12 +432,11 @@ export const consultTimeline = (a: Architect, now: number, width: number) => {
   return cells.join('')
 }
 
-export const receiptOf = (t: Turn, o: { durationMs: number; agentsSince: number; costNow: number | null; reason: string }): Receipt => ({
+export const receiptOf = (t: Turn, o: { durationMs: number; agentsSince: number; reason: string }): Receipt => ({
   durationMs: o.durationMs,
   agents: o.agentsSince,
   edits: t.edits,
   errors: t.errors,
-  costDelta: o.costNow !== null && t.costAtStart !== null && o.costNow - t.costAtStart >= 0.005 ? o.costNow - t.costAtStart : null,
   reason: o.reason,
 })
 
@@ -556,26 +566,73 @@ export const windowView = (w: UsageWindow | undefined, now: number) => {
   return { pct, isStale, resetIn: isStale ? '' : fmtResetIn(w.resetsAtMs ?? null, now) }
 }
 
-/** `5小時 13%`, `~13%` past its reset, `—` unknown: the window in a few cells. */
+/** `5h 13%`, `~13%` past its reset, `—` unknown: the window in a few cells. */
 export const windowShort = (label: string, w: UsageWindow | undefined, now: number) => {
   const v = windowView(w, now)
   return `${label} ${v === null ? '—' : `${v.isStale ? '~' : ''}${v.pct}%`}`
 }
+
+const CLAUDE_WINDOWS = ['five_hour', 'seven_day']
+
+/** A rate-limit reading as a usage window, its reset kept when the API gave one. */
+export const limitWindow = (l: { pct: number; resetsAt?: number | null }): UsageWindow =>
+  l.resetsAt == null ? { usedPercent: l.pct } : { usedPercent: l.pct, resetsAtMs: l.resetsAt }
+
+/** Claude's 5-hour and 7-day windows in a few cells, `5h 19% · 7d 3%`; null before any reading. */
+export const claudeWindows = (limits: readonly { kind: string; pct: number; resetsAt?: number | null }[], now: number) => {
+  const shown = CLAUDE_WINDOWS.flatMap(kind => limits.filter(l => l.kind === kind).slice(0, 1))
+  return shown.length === 0 ? null : shown.map(l => windowShort(limitLabel(l.kind), limitWindow(l), now)).join(' · ')
+}
+
+// ---------------------------------------------------------------- usage rows
+
+/** The cells a round-bordered panel with one cell of padding on each side takes from its width. */
+const PANEL_FRAME = 4
+const METER_MIN = 4
+const METER_MAX = 40
+/** The percent column, right-aligned after a space: `100%`, or `~100%` past its reset. */
+const METER_PCT_W = 5
+/** The detail column: `⏱ 10d23h`, `stale`, or the context's `116k/200k`. */
+const METER_DETAIL_W = 9
+
+/** One usage row as the pane draws it: `pct` null is a window not read yet. */
+export type Meter = { label: string; pct: number | null; isStale: boolean; detail: string }
+
+/** A usage window as a row: the time to its reset, or `stale` once past it, the last reading kept and marked. */
+export const windowMeter = (label: string, w: UsageWindow | undefined, now: number): Meter => {
+  const v = windowView(w, now)
+  if (v === null) return { label, pct: null, isStale: false, detail: '' }
+  return { label, pct: v.pct, isStale: v.isStale, detail: v.isStale ? 'stale' : v.resetIn ? `⏱ ${v.resetIn}` : '' }
+}
+
+/** `  58%`, ` ~58%` past its reset: right-aligned in the percent column. */
+export const meterPercent = (m: Meter) => `${m.isStale ? '~' : ''}${m.pct ?? 0}%`.padStart(METER_PCT_W)
+
+/**
+ * The bar's cells for the rows of a panel `panelW` wide: the label column, a space, the bar, a space,
+ * the percent, a space, then the widest of the rows' details. One width for every row of the panel,
+ * so the bars start and end together whatever each row's detail is.
+ */
+export const meterWidth = (panelW: number, labelW: number, details: readonly string[]) =>
+  Math.min(METER_MAX, Math.max(METER_MIN, panelW - PANEL_FRAME - labelW - METER_PCT_W - 3 - Math.max(METER_DETAIL_W, ...details.map(cells))))
+
+/** `s` padded with spaces to `width` cells, a wide character counting two. */
+export const padCells = (s: string, width: number) => s + ' '.repeat(Math.max(0, width - cells(s)))
 
 // ---------------------------------------------------------------- branch
 
 /** How many unreviewed paths the unfolded list draws before counting the rest. */
 export const GIT_PATH_ROWS = 8
 
-/** `未審 3 個檔案`; `✓ 未審 0` when every change was seen; `未審 未知` when that cannot be known, never 0. */
+/** `unreviewed 3 files`; `✓ unreviewed 0` when every change was seen; `unreviewed ?` when that cannot be known, never 0. */
 export const unreviewedLabel = (s: GitSnap) =>
-  s.unreviewed === undefined ? '未審 未知' : s.unreviewed === 0 ? '✓ 未審 0' : `未審 ${s.unreviewed} 個檔案`
+  s.unreviewed === undefined ? 'unreviewed ?' : s.unreviewed === 0 ? '✓ unreviewed 0' : `unreviewed ${plural(s.unreviewed, 'file')}`
 
-/** `更新 5 個檔案`: files that differ from HEAD, untracked ones included. */
-export const changedLabel = (s: GitSnap) => `更新 ${s.changed} 個檔案`
+/** `changed 5 files`: files that differ from HEAD, untracked ones included. */
+export const changedLabel = (s: GitSnap) => `changed ${plural(s.changed, 'file')}`
 
-/** `↔ origin/main ↑2 ↓1`, or `無上游`. */
-export const syncLabel = (s: GitSnap) => (s.upstream === undefined ? '無上游' : `↔ ${s.upstream} ↑${s.ahead ?? 0} ↓${s.behind ?? 0}`)
+/** `↔ origin/main ↑2 ↓1`, or `no upstream`. */
+export const syncLabel = (s: GitSnap) => (s.upstream === undefined ? 'no upstream' : `↔ ${s.upstream} ↑${s.ahead ?? 0} ↓${s.behind ?? 0}`)
 
 /** The list of unreviewed paths is only worth unfolding when there are some. */
 export const canUnfold = (s: GitSnap) => (s.unreviewed ?? 0) > 0
@@ -608,7 +665,7 @@ export const codexCard = (id: string, call: { purpose: string; note?: string }, 
   id,
   type: 'Codex',
   model,
-  description: call.note ? `${call.purpose}：${call.note}` : call.purpose,
+  description: call.note ? `${call.purpose}: ${call.note}` : call.purpose,
   spawnedAt: at,
   codex: {},
 })

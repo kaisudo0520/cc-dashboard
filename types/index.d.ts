@@ -20,7 +20,6 @@ export type Usage = {
   pct: number | null
   tokens: number | null
   window: number
-  costUsd: number | null
   /** `resetsAt`: when the window resets, in ms since the epoch; null when the API gave no time,
    *  absent in state saved before it was kept. */
   limits: { kind: string; pct: number; resetsAt?: number | null }[]
@@ -85,7 +84,6 @@ export type Turn = {
   errors: number
   isReviewing: boolean
   startedAt: number
-  costAtStart: number | null
 }
 
 export type Receipt = {
@@ -93,7 +91,6 @@ export type Receipt = {
   agents: number
   edits: number
   errors: number
-  costDelta: number | null
   reason: string
 }
 
