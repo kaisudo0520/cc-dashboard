@@ -1,460 +1,498 @@
-import { expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  NARROW_PROPS,
-  NOW,
-  SHOWN,
-  SPAWN,
-  WIDE_PROPS,
-  beginTurn,
-  endTurn,
-  engine,
-  mountPane,
-  order,
-  runDashboard,
-  start,
-  text,
-} from './harness'
+  DEFAULT_ARCHITECT,
+  DEFAULT_GATE,
+  DEFAULT_TURN,
+  afterCall,
+  applyStep,
+  consultTimeline,
+  describeInput,
+  endConsult,
+  fitLegend,
+  fmtResetIn,
+  fmtSpeed,
+  gateSummary,
+  lanes,
+  limitLabel,
+  limitOf,
+  logRows,
+  momentOf,
+  normalizeCard,
+  normalizeGate,
+  normalizeLog,
+  titleLines,
+  parseConfig,
+  prettyModel,
+  promptLine,
+  handbackOf,
+  adviceLine,
+  receiptOf,
+  recordCheck,
+  redact,
+  settleCheck,
+  trimRecent,
+  startConsult,
+  stepSpeed,
+} from '../hooks/core'
+import type { Check } from '../types'
 
-test('session start registers /dashboard and opens the pane', async ($, on) => {
-  const { world } = engine(on)
+// ---------------------------------------------------------------- pure behaviour
 
-  await start($)
-
-  expect(world.registered).toEqual(['dashboard'])
-  expect(world.opened).toEqual(['dashboard'])
+test('redaction masks credentials before anything is stored', () => {
+  expect(redact('curl -H "Authorization: Bearer abc.def.ghi123" x')).not.toContain('abc.def')
+  expect(redact('export OPENAI_API_KEY=sk-proj-1234567890abcdef')).not.toContain('1234567890')
+  expect(redact('gh auth --token ghp_abcdefghijklmnop')).not.toContain('abcdefghijklmnop')
+  expect(redact('psql postgres://bob:hunter2@db/x')).not.toContain('hunter2')
+  expect(redact('password=hunter2 ls')).not.toContain('hunter2')
+  expect(redact('ls -la src/')).toBe('ls -la src/')
+  expect(describeInput('Read', { file_path: 'C:\\Users\\me\\proj\\src\\main.ts' })).toBe('Read → src/main.ts')
 })
 
-test('a failure in the first-open bookkeeping at session start does not stop the session being read in or polled', async ($, on) => {
-  const { world, clock } = engine(on, { panes: [SHOWN] })
-  on('state.get', (_$, e, next) => (e.key === 'autoOpened' ? { deny: 'state is down' } : next(e)))
-  await start($)
-  await clock.advance(3000)
-
-  expect(world.registered).toEqual(['dashboard'])
-  // The session was read in (usage) and the poller started (a second read within the first poll).
-  expect(world.usageCalls).toBeGreaterThanOrEqual(2)
+const check = (id: string, verdict: Check['verdict'], bucket: Check['bucket'] = 'shell'): Check => ({
+  id,
+  tool: 'Bash',
+  bucket,
+  verdict,
+  inSubagent: false,
+  detail: 'Bash → ls',
+  at: 1,
 })
 
-test('/dashboard closes the pane when it is up and opens it when it is not', async ($, on) => {
-  const { world } = engine(on)
-
-  await runDashboard($)
-  expect(world.opened).toEqual(['dashboard'])
-  expect(world.closed).toEqual([])
-
-  world.panes = [{ id: 'dashboard', title: 'Dashboard', isShown: true, isFocused: false, isPlaced: true }]
-  await runDashboard($)
-  expect(world.closed).toEqual(['dashboard'])
-
-  // A pane that waits undrawn for a wider terminal counts as not up: the command opens it.
-  world.panes = [{ id: 'dashboard', title: 'Dashboard', isShown: false, isFocused: false, isPlaced: false }]
-  await runDashboard($)
-  expect(world.opened).toEqual(['dashboard', 'dashboard'])
-
-  // A pane placed but behind another tab is not showing: the command brings it up, not closes it.
-  world.panes = [{ id: 'dashboard', title: 'Dashboard', isShown: false, isFocused: false, isPlaced: true }]
-  await runDashboard($)
-  expect(world.opened).toHaveLength(3)
-  expect(world.closed).toEqual(['dashboard'])
+test('an ask is settled by the call that follows: cleared if it ran, deny if refused', () => {
+  let g = recordCheck(DEFAULT_GATE, check('a', 'ask'))
+  g = recordCheck(g, check('b', 'ask'))
+  g = recordCheck(g, check('c', 'rule', 'file'))
+  g = settleCheck(g, 'a', true)
+  g = settleCheck(g, 'b', false)
+  g = settleCheck(g, 'zzz', true) // not an ask: unchanged
+  const s = gateSummary(g)
+  expect([s.rule, s.ask, s.cleared, s.deny, s.total]).toEqual([1, 0, 1, 1, 3])
+  expect(g.recent.map(c => c.verdict)).toEqual(['cleared', 'deny', 'rule'])
 })
 
-test('the pane shows the main session from start to finish of a turn', async ($, on) => {
+test('the gate tallies a mixed run of verdicts per family', () => {
+  let g = DEFAULT_GATE
+  g = recordCheck(g, check('r1', 'rule', 'file'))
+  g = recordCheck(g, check('a1', 'ask', 'shell'))
+  g = recordCheck(g, check('a2', 'ask', 'shell'))
+  g = recordCheck(g, check('d1', 'deny', 'other'))
+  g = settleCheck(g, 'a1', true)
+  g = settleCheck(g, 'a2', false)
+  expect(g.totals.file).toEqual({ rule: 1, ask: 0, cleared: 0, deny: 0 })
+  expect(g.totals.shell).toEqual({ rule: 0, ask: 0, cleared: 1, deny: 1 })
+  expect(g.totals.other.deny).toBe(1)
+  expect(gateSummary(g)).toEqual({ rule: 1, ask: 0, cleared: 1, deny: 2, total: 4 })
+  expect(gateSummary(DEFAULT_GATE).total).toBe(0)
+})
+
+test('a v1-shaped gate reads as empty, then records normally', () => {
+  const g = normalizeGate({ file: { allow: 3, ask: 1, deny: 0, cleared: 2 }, shell: null })
+  expect(gateSummary(g).total).toBe(0)
+  const next = recordCheck(g, check('n1', 'rule', 'file'))
+  expect(next.totals.file.rule).toBe(1)
+  expect(next.recent.length).toBe(1)
+})
+
+test('a pending ask is never trimmed out before it settles', () => {
+  let g = recordCheck(DEFAULT_GATE, check('old-ask', 'ask'))
+  for (let i = 0; i < 120; i += 1) g = recordCheck(g, check(`r${i}`, 'rule', 'file'))
+  expect(g.recent.length).toBe(80)
+  expect(g.recent.some(c => c.id === 'old-ask')).toBe(true)
+  g = settleCheck(g, 'old-ask', true)
+  expect(gateSummary(g).ask).toBe(0)
+  expect(trimRecent([check('a', 'rule'), check('b', 'rule')], 5).length).toBe(2)
+})
+
+test('edits count from every loop; errors only from the main loop', () => {
+  const t = { ...DEFAULT_TURN, errorStreak: 1 }
+  expect(afterCall(t, { inSubagent: true, hasFailed: false, isEdit: true }).edits).toBe(1)
+  expect(afterCall(t, { inSubagent: true, hasFailed: true, isEdit: false }).errorStreak).toBe(1)
+  expect(afterCall(t, { inSubagent: false, hasFailed: true, isEdit: false })).toEqual({ ...t, errorStreak: 2, errors: 1 })
+  expect(momentOf(afterCall(DEFAULT_TURN, { inSubagent: true, hasFailed: false, isEdit: true }))).toBe('before done')
+  expect(momentOf({ edits: 0, errorStreak: 2 })).toBe('error repeats')
+})
+
+test("a card's context is its latest step's whole input; output adds up", () => {
+  let c = normalizeCard({ id: 'x' })
+  c = applyStep(c, { model: 'claude-sonnet-5-5', usage: { input_tokens: 10, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_000, output_tokens: 500 }, stopReason: 'tool_use' })
+  c = applyStep(c, { model: 'claude-sonnet-5-5', usage: { input_tokens: 5, cache_read_input_tokens: 40_000, output_tokens: 700 }, stopReason: 'max_tokens' })
+  expect([c.ctx, c.out, c.steps, c.lastStop, c.model]).toEqual([40_005, 1200, 2, 'max_tokens', 'claude-sonnet-5-5'])
+})
+
+test('consults open, close by id, and draw on a shared timeline', () => {
+  let a = startConsult(DEFAULT_ARCHITECT, { id: 's1', at: 0, moment: 'before a plan', via: 'advisor tool' })
+  a = startConsult(a, { id: 's1', at: 5, moment: 'before a plan', via: 'again' }) // same id: ignored
+  a = endConsult(a, 10, null, 's1')
+  a = startConsult(a, { id: 's2', at: 90, moment: 'before done', via: 'advisor tool' })
+  expect(a.consults.length).toBe(2)
+  expect(a.consults[0]?.endAt).toBe(10)
+  const tl = consultTimeline(a, 100, 11)
+  expect(tl.length).toBe(11)
+  expect(tl.startsWith('◆━')).toBe(true)
+  expect(tl.split('◆').length - 1).toBe(2)
+})
+
+test('config is read leniently: bad values fall back to defaults', () => {
+  const d = parseConfig({})
+  expect([d.maxCards, d.layout, d.motion, d.moments, d.panels.length]).toEqual([3, 'auto', true, true, 9])
+  expect(d.architect.test('fable-advisor:fable-advisor')).toBe(true)
+  const c = parseConfig({ architectPattern: '([', maxCards: 99, layout: 'diagonal', panels: 'log, gate ,nope,gate', motion: 'off' })
+  expect(c.architect.test('advisor')).toBe(true) // invalid regex → default
+  expect([c.maxCards, c.layout, c.motion]).toEqual([6, 'auto', false])
+  expect(c.panels).toEqual(['log', 'gate'])
+})
+
+test('state saved under an older shape still reads', () => {
+  expect(normalizeLog([{ at: '08:00:00', who: 'jev', text: 'x' }])[0]).toEqual({ at: 0, who: 'jev', text: 'x', agentId: null, kind: 'info' })
+  const g = normalizeGate({ file: { allow: 1 } }) // v1 gate shape
+  expect(g.recent).toEqual([])
+  expect(g.totals.shell.rule).toBe(0)
+  expect(normalizeCard({ id: 'a', status: 'done' }).tools).toEqual([])
+})
+
+test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never wraps', () => {
+  const cards = [
+    { ...normalizeCard({}), id: 'a', spawnedAt: 1000, endedAt: 1050 },
+    { ...normalizeCard({}), id: 'b', spawnedAt: 1050, endedAt: null },
+  ]
+  const [a, b] = lanes(cards, 1100, 20)
+  expect(a).toEqual({ id: 'a', before: 0, bar: 10, after: 10 })
+  expect(b?.before).toBe(10)
+  expect((b?.before ?? 0) + (b?.bar ?? 0) + (b?.after ?? 0)).toBe(20)
+  expect([logRows(10, 40), logRows(50, 40), logRows(200, 40)]).toEqual([4, 7, 8])
+  expect(fitLegend([{ label: 'main' }, { label: 'agents' }, { label: 'architect' }], 20).map(x => x.label)).toEqual(['main', 'agents'])
+  expect(limitLabel('five_hour')).toBe('5小時')
+  expect(limitLabel('seven_day_opus')).toBe('7天 opus')
+  expect(prettyModel('claude-opus-5-5[1m]')).toBe('Opus 5.5 1M')
+  expect(prettyModel('us.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe('Sonnet 4.5')
+  expect(prettyModel('claude-3-5-haiku-20241022')).toBe('Haiku 3.5')
+  expect(prettyModel('claude-opus-4-20250514')).toBe('Opus 4')
+  expect(prettyModel('claude-3-opus-20240229')).toBe('Opus 3')
+  expect(prettyModel('z-ai/glm-5.3-flash-with-a-long-name')).toBe('z-ai/glm-5.3-flash-wi…')
+  expect(prettyModel('')).toBe('—')
+  expect(promptLine('fix the parser')).toEqual({ who: 'you', text: 'fix the parser' })
+  const hb = '<agent-message from="a1940a83d593229d5">\n[Subagent hand-back] The text below is the final report. The report follows:\n  Add gate tests: redaction edge cases.\n  - more\n</agent-message>'
+  expect(handbackOf(hb)).toEqual({ from: 'a1940a83d593229d5', body: 'Add gate tests: redaction edge cases.' })
+  expect(handbackOf('<agent-message from="x">\nPlain report line\n</agent-message>')).toEqual({ from: 'x', body: 'Plain report line' })
+  expect(handbackOf('fix the parser')).toBe(null)
+  expect(adviceLine('## Ship it after one more gate test.\n- details')).toBe('Ship it after one more gate test.')
+  expect(adviceLine('[Subagent hand-back] header\n\n**Fix card overflow first**')).toBe('Fix card overflow first')
+  expect(adviceLine('')).toBe('')
+  expect(promptLine('<agent-message from="a1492260715f3be7b"> [Subagent hand-back]')).toEqual({ who: 'engine', text: 'agent message from a1492260' })
+  expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 5 }, { durationMs: 1, agentsSince: 0, costNow: 5, reason: 'answer' }).costDelta).toBe(null)
+  expect(titleLines('Write tinyqueue test suite', 13, 16)).toEqual(['Write', 'tinyqueue test…'])
+  expect(titleLines('Short', 13, 16)).toEqual(['Short', ''])
+  expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 1, edits: 2 }, { durationMs: 1000, agentsSince: 3, costNow: 1.5, reason: 'answer' }).costDelta).toBe(0.5)
+})
+
+test('a request\'s speed: time to its first piece, then output tokens per second to the stop', () => {
+  expect(stepSpeed(1000, 1800, 3800, 120)).toEqual({ ttftMs: 800, tokPerS: 60 })
+  expect(stepSpeed(1000, null, 3800, 120)).toBe(null) // no response arrived
+  expect(stepSpeed(1000, 1800, 1800, 120)?.tokPerS).toBe(null) // nothing to divide by
+  expect(stepSpeed(1000, 1800, 3800, null)?.tokPerS).toBe(null)
+  expect(fmtSpeed({ ttftMs: 800, tokPerS: 60.4 })).toBe('首字 0.8s · 60 tok/s')
+  expect(fmtSpeed({ ttftMs: 1250, tokPerS: null })).toBe('首字 1.3s')
+})
+
+test('a window keeps its reset time, drawn as the time left', () => {
+  expect(limitOf({ kind: 'five_hour', percentUsed: 19, resetsAt: '1970-01-01T03:10:00.000Z' })).toEqual({ kind: 'five_hour', pct: 19, resetsAt: 11_400_000 })
+  expect(limitOf({ kind: 'seven_day', percentUsed: 3 }).resetsAt).toBe(null)
+  expect(limitOf({ kind: 'spend_limit', percentUsed: 1, resetsAt: 'soon' }).resetsAt).toBe(null)
+  expect([fmtResetIn(11_400_000, 0), fmtResetIn(25 * 60_000 + 5_000, 0), fmtResetIn(4 * 86_400_000 + 2 * 3_600_000, 0)]).toEqual(['3h10m', '25m', '4d2h'])
+  expect([fmtResetIn(null, 0), fmtResetIn(undefined, 0), fmtResetIn(5, 10)]).toEqual(['', '', ''])
+})
+
+// ---------------------------------------------------------------- drawing
+
+const engine = (on: On) => {
+  const clock = mock.clock(on)
+  on('ui.status', () => ({ value: undefined }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  return clock
+}
+
+const pane = (bodyColumns: number) => ({
+  plugin: 'cc-dashboard',
+  component: 'Pane' as const,
+  requestId: 'dashboard',
+  props: {
+    title: 'Dashboard',
+    isFocused: true,
+    bodyColumns,
+    placement: 'dock' as const,
+    scroll: { offset: 0, bodyRows: 70 },
+    view: {},
+  },
+})
+
+let spawnN = 0
+const spawn = (subagentType: string, description: string) => ({
+  prompt: description,
+  description,
+  subagentType,
+  tool_use_id: `tu${++spawnN}`,
+  provider: { plugin: 'engine', tier: 'core' as const },
+  parentModel: 'claude-opus-5-5',
+  background: true,
+  fork: false,
+})
+
+test('a fresh session draws on every surface and width, empty panels hidden', async ($, on) => {
   engine(on)
-  await start($)
-  let pane = await mountPane($)
-  expect(await text(pane, /MAIN\s+opus-5-5/)).toBeDefined()
-  expect(await text(pane, /閒置 · 回合 4/)).toBeDefined()
-  await pane.unmount()
-
-  await beginTurn($)
-  pane = await mountPane($)
-  expect(await text(pane, /思考中 · 回合 5/)).toBeDefined()
-  await pane.unmount()
-
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
-  await endTurn($)
-  pane = await mountPane($)
-  expect(await text(pane, /閒置 · 回合 5/)).toBeDefined()
-  expect(await text(pane, '回合 5 完成 · 8s')).toBeDefined()
-  expect(await text(pane, '工具 Bash')).toBeDefined()
-  expect(await text(pane, '14:02:11')).toBeDefined()
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    for (const cols of [40, 60, 86, 120]) {
+      const ui = await $.ui.mount({ ...pane(cols), surface })
+      expect(await ui.find({ text: /· 主模型$/ })).toBeDefined()
+      expect(await ui.find({ text: /工作紀錄/ })).toBeDefined()
+      expect(await ui.find({ text: /子代理 ·/ })).toBeUndefined() // no subagents: no agents panel
+      expect(await ui.find({ text: /權限 · 檢查/ })).toBeUndefined() // no checks yet: no gate panel
+      await ui.unmount()
+    }
+  }
 })
 
-test('a tool call shows as the main activity while it runs', async ($, on) => {
-  let seen = 'never'
-  engine(on, {
-    onToolCall: async () => {
-      const pane = await mountPane($)
-      seen = (await text(pane, /執行工具 Bash/)) === undefined ? 'missing' : 'shown'
-    },
-  })
-  await start($)
-  await beginTurn($)
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
-
-  expect(seen).toBe('shown')
-})
-
-test('the model and effort of the main request show in the header', async ($, on) => {
+test('inline above the prompt, the pane is a summary of at most 8 rows', async ($, on) => {
   engine(on)
-  await start($)
-  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 1 })
-  let step = await stream.next()
-  while (step.done !== true) step = await stream.next()
-
-  const pane = await mountPane($)
-  expect(await text(pane, /MAIN\s+opus-5-5 · xhigh/)).toBeDefined()
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `m${++n}` }))
+  on('tool.check', () => ({ decision: 'allow' }))
+  await $.turn.start({ text: 'go', turnId: 'M1' })
+  for (const d of ['one', 'two', 'three', 'four', 'five']) await $.agent.spawn(spawn('general-purpose', `task ${d}`))
+  await $.tool.check({ tool: 'Read', input: { file_path: '/a' }, tool_use_id: 'm-k1' })
+  for (const surface of ['terminal', 'vscode'] as const) {
+    const ui = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface })
+    const root = (await ui.drawn()) as { children?: unknown[] }
+    expect((root.children ?? []).filter(Boolean).length <= 8).toBe(true)
+    expect(await ui.find({ text: /\+2 個子代理/ })).toBeDefined()
+    expect(await ui.find({ text: /1 允許/ })).toBeDefined()
+    expect(await ui.find({ text: /工作紀錄/ })).toBeUndefined()
+    await ui.unmount()
+  }
 })
 
-test('the configured advisor model shows with its consult count and last time', async ($, on) => {
-  engine(on, {
-    settings: { advisorModel: 'claude-fable-5-1' },
-    serverToolUses: [
-      { id: 'u1', name: 'advisor', input: {}, startedAt: NOW, endedAt: NOW + 3000 },
-      { id: 'u2', name: 'advisor', input: {}, startedAt: NOW + 4000, endedAt: NOW + 5000 },
-    ],
-  })
-  await start($)
-  let pane = await mountPane($)
-  expect(await text(pane, 'fable-5-1')).toBeDefined()
-  expect(await text(pane, '尚未諮詢')).toBeDefined()
-  await pane.unmount()
-
-  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
-  let step = await stream.next()
-  while (step.done !== true) step = await stream.next()
-
-  pane = await mountPane($)
-  expect(await text(pane, '2 次 · 14:02:16')).toBeDefined()
-  expect(await text(pane, '顧問諮詢 · fable-5-1')).toBeDefined()
-})
-
-test('a spawned subagent gets a box with its type, model and task, and a finished one shows its end', async ($, on) => {
-  const { world } = engine(on)
-  await start($)
-  await $.agent.spawn({
-    tool_use_id: 'tu1',
-    prompt: 'scan',
-    description: 'scan the repo',
-    subagentType: 'Explore',
-    provider: { plugin: 'engine', tier: 'core' },
-    parentModel: 'claude-opus-5-5',
-    background: true,
-    fork: false,
-  })
-
-  let pane = await mountPane($)
-  expect(await pane.find({ key: 'agent-a1' })).toBeDefined()
-  expect(await text(pane, /Explore · haiku-5-5/)).toBeDefined()
-  expect(await text(pane, 'scan the repo')).toBeDefined()
-  expect(await text(pane, '◐')).toBeDefined()
-  await pane.unmount()
-
-  world.agents = [{ id: 'a1', description: 'scan the repo', type: 'Explore', status: 'completed' }]
-  await $.turn.complete({
-    turnId: 't9',
-    agentId: 'a1',
-    answer: 'done',
-    durationMs: 5000,
-    isAborted: false,
-    reason: 'answer',
-  })
-  pane = await mountPane($)
-  expect(await text(pane, '✓')).toBeDefined()
-  expect(await text(pane, '子代理結束 scan the repo: completed')).toBeDefined()
-})
-
-test('with no subagent the pane draws no agent area', async ($, on) => {
+test('/clear starts the pane fresh', async ($, on) => {
   engine(on)
-  await start($)
-  const pane = await mountPane($)
-  expect(await pane.find({ key: 'agents' })).toBeUndefined()
-  expect(await text(pane, '尚無子代理')).toBeUndefined()
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'c1' }))
+  await $.turn.start({ text: 'go', turnId: 'C1' })
+  await $.agent.spawn(spawn('Explore', 'look around'))
+  await $.session.end({ reason: 'clear', sessionId: 's' } as never)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /look around/ })).toBeUndefined()
+  await ui.unmount()
 })
 
-test('the Context bar is the only context display: it follows the measurement as what is used, and the quota header has no CTX row', async ($, on) => {
+test('colours come from the theme by default, raw hex only when asked', async ($, on) => {
   engine(on)
-  await start($)
-  await $.session.measure({
-    context: { tokens: 84_000, window: 200_000, percent: 42 },
-    rateLimits: [],
-    changed: ['context'],
-  })
-  const pane = await mountPane($)
-  expect(await pane.find({ key: 'context' })).toBeDefined()
-  expect(await text(pane, /Context .* 42%\s+84k\/200k/)).toBeDefined()
-  expect(await text(pane, /CTX/)).toBeUndefined()
-  expect(await text(pane, '58%')).toBeUndefined()
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  const title = await ui.find({ text: /· 主模型$/ })
+  expect(title?.props.color).toBe('claude')
+  await ui.unmount()
 })
 
-test('a narrow pane has the same Context bar and no CTX line', async ($, on) => {
+test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'pastel' } }, async ($, on) => {
   engine(on)
-  await start($)
-  const pane = await mountPane($, NARROW_PROPS)
-
-  expect(await pane.find({ key: 'context' })).toBeDefined()
-  expect(await text(pane, /Context .* 5%\s+10k\/200k/)).toBeDefined()
-  expect(await text(pane, /CTX/)).toBeUndefined()
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect((await ui.find({ text: /· 主模型$/ }))?.props.color).toBe('#7dd3fc')
+  await ui.unmount()
 })
 
-test('before any reading the Context bar says it does not know', async ($, on) => {
+test('subagents become cards, then swimlanes past the card limit; a card expands on its hotkey', async ($, on) => {
   engine(on)
-  const pane = await mountPane($)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `ag${++n}` }))
+  await $.turn.start({ text: 'fan out', turnId: 'T1' })
+  await $.agent.spawn(spawn('general-purpose', 'Write the parser tests'))
+  await $.agent.spawn(spawn('Explore', 'Map the call sites'))
 
-  expect(await text(pane, 'Context —')).toBeDefined()
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /Write the parser/ })).toBeDefined()
+  expect(await ui.find({ text: /Sonnet 5\.5/ })).toBeDefined() // differs from main: shown
+  await ui.press({ key: 'card-ag1' })
+  expect(await ui.find({ text: /^Write the parser tests$/ })).toBeDefined() // the expanded panel, full title
+  await ui.unmount()
+
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const lanesUi = await $.ui.mount({ ...pane(64), surface })
+    expect(await lanesUi.find({ text: /共 4/ })).toBeDefined()
+    expect(await lanesUi.find({ text: /━/ })).toBeDefined()
+    await lanesUi.unmount()
+  }
 })
 
-test('the Context bar sits below the CODEX block and above the SESSION LOG, wide and narrow', async ($, on) => {
+test('the server-side advisor is read from assistant rows: consulting, then on call', async ($, on) => {
   engine(on)
-  await start($)
-  await $.tool.call({ tool: 'Bash', command: 'codex exec --sandbox read-only -m gpt-6-sol - < brief.md' })
-  const wide = await mountPane($)
-  expect(await order(wide, ['quota', 'main', 'codex', 'context', 'log'])).toEqual(['quota', 'main', 'codex', 'context', 'log'])
+  await $.turn.start({ text: 'plan it', turnId: 'T2' })
+  const row = (content: unknown[]) =>
+    $.session
+      .append({
+        message: { type: 'assistant', role: 'assistant', content: content as never },
+        door: 'response',
+        origin: { kind: 'model', model: 'claude-opus-5-5' } as never,
+        uuid: `u${++spawnN}`,
+      })
+      .catch(() => undefined) // the test has no transcript to store rows in
+  await row([{ type: 'server_tool_use', id: 'srv1', name: 'advisor', input: {} }])
+  const mid = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await mid.find({ text: /顧問 · 諮詢中/ })).toBeDefined()
+  expect(await mid.find({ text: /◆ 規劃前/ })).toBeDefined()
+  await mid.unmount()
+
+  await row([{ type: 'advisor_tool_result', tool_use_id: 'srv1', content: { type: 'advisor_redacted_result' } }])
+  const after = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await after.find({ text: /顧問 · 待命/ })).toBeDefined()
+  expect(await after.find({ text: /^1$/ })).toBeDefined()
+  await after.unmount()
+})
+
+test('the gate strip fills from checks and a row opens its redacted drill-down', async ($, on) => {
+  engine(on)
+  on('tool.check', (_$, e) => ({ decision: e.tool === 'Read' ? 'allow' : 'ask' }))
+  await $.tool.check({ tool: 'Read', input: { file_path: '/a/b.ts' }, tool_use_id: 'k1' })
+  await $.tool.check({ tool: 'Bash', input: { command: 'curl -H "Authorization: Bearer abcdefgh12345" api' }, tool_use_id: 'k2' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /2 次/ })).toBeDefined()
+  expect(await ui.find({ text: /1 待決/ })).toBeDefined()
+  await ui.press({ key: 'gate-shell' })
+  expect(await ui.find({ text: /Authorization: Bearer •••/ })).toBeDefined()
+  expect(await ui.find({ text: /abcdefgh12345/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('config changes labels, hides panels and turns the moments off', { options: { architectLabel: 'REVIEWER', panels: 'main,architect,agents,log', moments: false } }, async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: `r${++n}` }))
+  await $.turn.start({ text: 'review it', turnId: 'T3' })
+  await $.agent.spawn(spawn('fable-advisor:fable-advisor', 'final review'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /REVIEWER · 諮詢中/ })).toBeDefined()
+  expect(await ui.find({ text: /權限 · 檢查/ })).toBeUndefined()
+  expect(await ui.find({ text: /規劃前/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a consult whose start and result share one row closes, and its review flag with it', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.turn.start({ text: 'go', turnId: 'T4' })
+  // An edit first, so the consult is inferred as "before done" and sets the review flag.
+  await $.tool.call({ tool: 'Edit', file_path: '/x.ts', old_string: 'a', new_string: 'b' } as never)
+  await $.session
+    .append({
+      message: {
+        type: 'assistant',
+        role: 'assistant',
+        content: [
+          { type: 'server_tool_use', id: 'srv9', name: 'advisor', input: {} },
+          { type: 'advisor_tool_result', tool_use_id: 'srv9', content: { type: 'advisor_redacted_result' } },
+        ] as never,
+      },
+      door: 'response',
+      origin: { kind: 'model', model: 'claude-opus-5-5' } as never,
+      uuid: 'one-row',
+    })
+    .catch(() => undefined)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /顧問 · 待命/ })).toBeDefined()
+  expect(await ui.find({ text: /◆ 完成前/ })).toBeDefined()
+  expect(await ui.find({ text: /完成前審查中/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('with no architect anywhere, the panel, legend entry and status field stay hidden', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /顧問/ })).toBeUndefined()
+  expect(await ui.find({ text: /^ 顧問$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('cards that cannot fit the pane fall back to lanes', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'W1' })
+  for (const d of ['alpha', 'beta', 'gamma']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  expect(await narrow.find({ text: /━/ })).toBeDefined() // lanes
+  await narrow.unmount()
+  const wide = await $.ui.mount({ ...pane(70), surface: 'terminal' })
+  expect(await wide.find({ text: /━/ })).toBeUndefined() // three cards fit in 70
+  expect(await wide.find({ text: /task gamma/ })).toBeDefined()
   await wide.unmount()
-
-  const narrow = await mountPane($, NARROW_PROPS)
-  expect(await order(narrow, ['quota', 'main', 'codex', 'context', 'log'])).toEqual(['quota', 'main', 'codex', 'context', 'log'])
 })
 
-test('a narrow pane stacks the sections instead of drawing columns', async ($, on) => {
-  engine(on, { settings: { advisorModel: 'claude-fable-5-1' } })
-  await start($)
-  const pane = await mountPane($, NARROW_PROPS)
-
-  expect(await pane.find({ key: 'dash-narrow' })).toBeDefined()
-  expect(await pane.find({ key: 'dash-wide' })).toBeUndefined()
-  expect(await pane.find({ key: 'main' })).toBeDefined()
-  expect(await pane.find({ key: 'advisor' })).toBeDefined()
-  expect(await pane.find({ key: 'quota' })).toBeDefined()
-})
-
-test('a wide pane draws the columns', async ($, on) => {
+test("a background architect's advice is read from its hand-back", async ($, on) => {
   engine(on)
-  await start($)
-  const pane = await mountPane($)
-  expect(await pane.find({ key: 'dash-wide' })).toBeDefined()
-  expect(await pane.find({ key: 'dash-narrow' })).toBeUndefined()
-})
-
-test('while something runs the dashboard keeps looking at the agents, and when all is idle it stops', async ($, on) => {
-  const { world, clock } = engine(on, { panes: [SHOWN] })
-  await start($)
-  const afterStart = world.agentListCalls
-
-  await beginTurn($)
-  await clock.advance(2000)
-  const whileBusy = world.agentListCalls
-  expect(whileBusy).toBeGreaterThan(afterStart)
-
-  await endTurn($)
-  const afterEnd = world.agentListCalls
-  await clock.advance(10_000)
-  expect(world.agentListCalls).toBe(afterEnd)
-})
-
-test('with the pane closed, or behind another tab, the animation does no work', async ($, on) => {
-  const { world, clock } = engine(on)
-  await start($)
-  const afterStart = world.agentListCalls
-
-  await beginTurn($)
-  await clock.advance(5000)
-  expect(world.agentListCalls).toBe(afterStart)
-
-  world.panes = [{ ...SHOWN, isShown: false }]
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
-  await clock.advance(5000)
-  expect(world.agentListCalls).toBe(afterStart)
-})
-
-test('the animation resumes when the pane is shown again', async ($, on) => {
-  const { world, clock } = engine(on)
-  await start($)
-  await beginTurn($)
-  await clock.advance(2000)
-  const whileClosed = world.agentListCalls
-
-  // The command opens the pane; the engine then shows it.
-  await runDashboard($)
-  world.panes = [SHOWN]
-  await clock.advance(2000)
-  expect(world.agentListCalls).toBeGreaterThan(whileClosed)
-})
-
-test('a failing look-up at start does not stop the dashboard from drawing', async ($, on) => {
-  engine(on, { settingsDeny: true })
-  await start($)
-  const pane = await mountPane($)
-  expect(await pane.find({ key: 'dash-wide' })).toBeDefined()
-  expect(await pane.find({ key: 'advisor' })).toBeUndefined()
-})
-
-test('a subagent spawned without a description is logged under its type', async ($, on) => {
-  engine(on)
-  await start($)
-  await $.agent.spawn({
-    tool_use_id: 'tu2',
-    prompt: 'scan',
-    description: '',
-    subagentType: 'Explore',
-    provider: { plugin: 'engine', tier: 'core' },
-    parentModel: 'claude-opus-5-5',
-    background: true,
-    fork: false,
+  on('agent.spawn', () => ({ model: 'claude-fable-5-1', agentId: 'fab1' }))
+  await $.turn.start({ text: 'review it', turnId: 'H1' })
+  await $.agent.spawn(spawn('fable-advisor:fable-advisor', 'final review'))
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'H1', agentId: 'fab1', reason: 'answer' })
+  await $.turn.start({
+    text: '<agent-message from="fab1">\n[Subagent hand-back] The report follows:\n  Ship it after one more gate test.\n</agent-message>',
+    turnId: 'H2',
   })
-  const pane = await mountPane($)
-  expect(await text(pane, '子代理啟動 Explore')).toBeDefined()
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /» Ship it after one more gate test\./ })).toBeDefined()
+  await ui.unmount()
 })
 
-test('the dashboard draws on the desktop surface as well', async ($, on) => {
+test('each rate-limit window shows the time to its reset where the main panel has room', async ($, on) => {
   engine(on)
-  await start($)
-  const pane = await $.ui.mount({
-    plugin: 'cc-dashboard',
-    surface: 'desktop',
-    component: 'Pane',
-    requestId: 'dashboard',
-    props: WIDE_PROPS,
-    viewport: { columns: 100, rows: 40 },
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const at = (ms: number) => new Date(ms).toISOString()
+  await $.session.measure({
+    context: { window: 200_000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 19, resetsAt: at(3 * 3_600_000 + 10 * 60_000) },
+      { kind: 'seven_day', percentUsed: 3, resetsAt: at(4 * 86_400_000 + 2 * 3_600_000) },
+    ],
+    changed: ['rateLimits'],
   })
-  expect(await pane.find({ key: 'dash-wide' })).toBeDefined()
+  for (const cols of [64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(await ui.find({ text: /19% ⏱ 3h10m/ })).toBeDefined()
+    expect(await ui.find({ text: /3% ⏱ 4d2h/ })).toBeDefined()
+    await ui.unmount()
+  }
+  const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  expect(await narrow.find({ text: /19%/ })).toBeDefined()
+  expect(await narrow.find({ text: /⏱ / })).toBeUndefined() // no room: the gauges stay whole
+  await narrow.unmount()
 })
 
-test('/dashboard says why when the pane cannot open', async ($, on) => {
-  engine(on, { openDeny: 'no-surface: no surface is attached' })
-
-  const answer = await runDashboard($)
-  expect(answer.text).toMatch(/^dashboard: .*no-surface: no surface is attached/)
-})
-
-test('a hot reload does not reopen a pane the person closed', async ($, on) => {
-  const { world } = engine(on)
-  await start($)
-  await start($)
-  expect(world.opened).toEqual(['dashboard'])
-})
-
-test('the turn count follows the engine when it is ahead of what was counted', async ($, on) => {
-  const { world } = engine(on)
-  await start($)
-  world.turns = 9
-  await beginTurn($)
-  const pane = await mountPane($)
-  expect(await text(pane, /思考中 · 回合 9/)).toBeDefined()
-})
-
-test('the legend and the advisor box agree when the advisor is not in the settings', async ($, on) => {
-  engine(on, { serverToolUses: [{ id: 'u1', name: 'advisor', input: {}, startedAt: NOW, endedAt: NOW + 1000 }] })
-  await start($)
-  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
-  let step = await stream.next()
-  while (step.done !== true) step = await stream.next()
-
-  const pane = await mountPane($)
-  expect(await text(pane, '■ on · advisor')).toBeDefined()
-  expect(await text(pane, 'on')).toBeDefined()
-})
-
-test('a subagent first seen in the list shows no elapsed time', async ($, on) => {
-  engine(on, { agents: [{ id: 'f1', description: 'forked skill', type: 'fork', status: 'running' }] })
-  await start($)
-  await $.turn.start({ text: 'go', turnId: 't7', agentId: 'f1' })
-
-  const pane = await mountPane($)
-  expect(await text(pane, 'forked skill')).toBeDefined()
-  expect(await text(pane, '—')).toBeDefined()
-})
-
-test('a list that has not caught up does not make a finished subagent flicker back to running', async ($, on) => {
-  const { world, clock } = engine(on, { panes: [SHOWN] })
-  await start($)
-  await $.agent.spawn(SPAWN)
-  world.agents = [{ id: 'a1', description: 'scan the repo', type: 'Explore', status: 'running' }]
-  await clock.advance(3000)
-
-  // The subagent's turn ends, but the list still reads running.
-  await $.turn.complete({ turnId: 't9', agentId: 'a1', answer: 'done', durationMs: 3000, isAborted: false, reason: 'answer' })
-  world.agents = [{ id: 'a1', description: 'scan the repo', type: 'Explore', status: 'completed' }]
-  await clock.advance(1000)
-  const calls = world.agentListCalls
-  await clock.advance(5000)
-
-  const pane = await mountPane($)
-  expect(await text(pane, '3s')).toBeDefined()
-  expect(await text(pane, '✓')).toBeDefined()
-  expect(world.agentListCalls).toBe(calls)
-})
-
-test('a subagent that starts a new turn after it finished is running again', async ($, on) => {
-  const { world } = engine(on)
-  await start($)
-  await $.agent.spawn(SPAWN)
-  await $.turn.complete({ turnId: 't9', agentId: 'a1', answer: 'done', durationMs: 1, isAborted: false, reason: 'answer' })
-  world.agents = [{ id: 'a1', description: 'scan the repo', type: 'Explore', status: 'running' }]
-  await $.turn.start({ text: 'again', turnId: 't10', agentId: 'a1' })
-
-  const pane = await mountPane($)
-  expect(await text(pane, '◐')).toBeDefined()
-  expect(await text(pane, '✓')).toBeUndefined()
-})
-
-test('an errored subagent turn shows as failed', async ($, on) => {
-  engine(on)
-  await start($)
-  await $.agent.spawn(SPAWN)
-  await $.turn.complete({ turnId: 't9', agentId: 'a1', answer: '', durationMs: 1, isAborted: false, reason: 'error' })
-
-  const pane = await mountPane($)
-  expect(await text(pane, '✗')).toBeDefined()
-})
-
-test('the pane opens with no size request, since the terminal height is not known yet', async ($, on) => {
-  const { world } = engine(on)
-  await start($)
-
-  expect(world.openArgs).toHaveLength(1)
-  expect(world.openArgs[0]).toEqual({ id: 'dashboard', title: 'Dashboard' })
-})
-
-test('once the first drawing tells the terminal height, the pane asks once for 60% of it, with no columns', async ($, on) => {
-  const { world, clock } = engine(on)
-  await start($)
-  let pane = await mountPane($)
-  await clock.advance(10)
-  await pane.unmount()
-  pane = await mountPane($)
-  await pane.unmount()
-  await mountPane($, NARROW_PROPS)
-  await clock.advance(10)
-
-  expect(world.openArgs).toEqual([
-    { id: 'dashboard', title: 'Dashboard' },
-    { id: 'dashboard', title: 'Dashboard', rows: 24 },
-  ])
-})
-
-test('a size request the engine refused is asked again at the next drawing', async ($, on) => {
-  const { world, clock } = engine(on, { openDeny: 'no-surface: no surface is attached' })
-  await start($)
-  await (await mountPane($)).unmount()
-  await clock.advance(10)
-  expect(world.openArgs).toEqual([])
-
-  delete world.openDeny
-  await (await mountPane($)).unmount()
-  await clock.advance(10)
-
-  expect(world.openArgs).toEqual([{ id: 'dashboard', title: 'Dashboard', rows: 24 }])
-})
-
-test('/dashboard opens the pane with the requested rows once the height is known', async ($, on) => {
-  const { world, clock } = engine(on)
-  await start($)
-  await (await mountPane($)).unmount()
-  await clock.advance(10)
-  await runDashboard($)
-
-  expect(world.openArgs.at(-1)).toMatchObject({ id: 'dashboard', rows: 24, focus: true })
-  expect(world.openArgs.at(-1)).not.toHaveProperty('columns')
+test("the main box shows the last request's time to first token and decode speed", async ($, on) => {
+  const clock = engine(on)
+  // The model beneath: 800 ms to its first words, then 2 s more to stop after 120 tokens.
+  on('turn.step', async function* () {
+    await clock.sleep(800)
+    yield { kind: 'text' as const, index: 0, text: 'hello' }
+    await clock.sleep(2000)
+    const usage = { input_tokens: 10, output_tokens: 120, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' }
+    yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage }
+    return { turnId: 'S1', index: 0, answer: 'hello', toolUses: [], stopReason: 'end_turn' as const, usage }
+  })
+  const before = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  expect(await before.find({ text: /首字/ })).toBeUndefined() // nothing measured yet: no line
+  await before.unmount()
+  const s = $.turn.step({ turnId: 'S1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+  const first = s.next()
+  await clock.advance(800)
+  expect((await first).value).toEqual({ kind: 'text', index: 0, text: 'hello' })
+  const stop = s.next()
+  await clock.advance(2000)
+  await stop
+  for await (const _ of s) void _
+  await s.result
+  for (const cols of [40, 64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(await ui.find({ text: /首字 0\.8s · 60 tok\/s/ })).toBeDefined()
+    await ui.unmount()
+  }
 })

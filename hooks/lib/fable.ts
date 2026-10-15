@@ -1,32 +1,12 @@
-import type { ClaudeQuota, UsageWindow } from '../../types'
+import type { UsageWindow } from '../../types'
 
-// Claude's usage windows: the session's own rate limits (five-hour, weekly) and
-// the Fable weekly window out of /api/oauth/usage. Plain data in and out; the
-// hooks do the calling.
-
-type Limit = { kind: string; percentUsed: number; resetsAt?: string }
+// The Fable weekly window: not in the session's rate limits, so it is asked of
+// /api/oauth/usage. Plain data in and out; the hooks do the calling.
 
 const clampPercent = (value: number): number => Math.min(100, Math.max(0, value))
 
 const windowOf = (usedPercent: number, resetsAtMs: number): UsageWindow =>
   Number.isNaN(resetsAtMs) ? { usedPercent } : { usedPercent, resetsAtMs }
-
-// A percent that is not a number says nothing: the window is unknown, not 0% used.
-const toWindow = (limit: Limit): UsageWindow | undefined =>
-  Number.isFinite(limit.percentUsed)
-    ? windowOf(clampPercent(limit.percentUsed), limit.resetsAt === undefined ? NaN : Date.parse(limit.resetsAt))
-    : undefined
-
-/** The five-hour and weekly windows out of `$.session.usage()`'s `rateLimits`. */
-export const claudeWindows = (limits: readonly Limit[]): Pick<ClaudeQuota, 'fiveHour' | 'sevenDay'> => {
-  const find = (kind: string): UsageWindow | undefined => {
-    const hit = limits.find(limit => limit.kind === kind)
-
-    return hit === undefined ? undefined : toWindow(hit)
-  }
-
-  return { fiveHour: find('five_hour'), sevenDay: find('seven_day') }
-}
 
 // Per-model weekly windows (Fable) are not in the session's rate limits. The
 // server reports them in /api/oauth/usage as `limits[]` entries:
@@ -76,14 +56,3 @@ export const nextFableDelay = (previousMs: number, isOk: boolean, retryAfter: st
 
   return Number.isFinite(asked) && asked > 0 ? Math.min(FABLE_BACKOFF_MAX_MS, Math.max(asked, backoff)) : backoff
 }
-
-/**
- * What a window shows: the percent left as last reported, and whether that
- * reading is stale. Past its reset time a window has probably started over,
- * but nothing says so until a new reading arrives: the last figure is kept,
- * marked stale, and never replaced by a guess of a full window.
- */
-export const readingOf = (window: UsageWindow, nowMs: number): { left: number; isStale: boolean } => ({
-  left: Math.max(0, Math.round(100 - window.usedPercent)),
-  isStale: window.resetsAtMs !== undefined && window.resetsAtMs <= nowMs,
-})

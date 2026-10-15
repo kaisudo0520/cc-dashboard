@@ -1,5 +1,5 @@
 import type { GitSnap } from '../../types'
-import { plain } from './format'
+import { plain } from './plain'
 
 /** How many unreviewed paths the 分支 panel can unfold. */
 export const UNREVIEWED_SHOWN = 20

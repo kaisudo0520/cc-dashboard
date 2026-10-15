@@ -1,7 +1,98 @@
 {
   "name": "cc-dashboard",
-  "version": "0.1.0",
-  "author": { "name": "Kai Su" },
-  "description": "Mission-control dashboard in a dock pane: main session, advisor, subagents, context and session log",
-  "types": "./types/index.d.ts"
+  "version": "0.2.0",
+  "description": "任務控制台：以 Flightdeck 為基礎，主模型（含 Fable 週額度）、顧問、權限、子代理卡片與泳道（含 codex exec）、回合收據、工作紀錄，加上 Codex 額度、分支（未審／更新檔案數）與其他 session 等你回應的提醒。只顯示真實資料。",
+  "author": {
+    "name": "Kai Su"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "architectPattern": {
+      "title": "顧問樣式",
+      "description": "被視為顧問的 agent 類型與 server tool 名稱（正規表示式，不分大小寫），例如 advisor|architect|reviewer",
+      "type": "string",
+      "default": "advisor|architect"
+    },
+    "architectLabel": {
+      "title": "顧問標籤",
+      "description": "顧問在面板中的名稱",
+      "type": "string",
+      "default": "顧問"
+    },
+    "gateLabel": {
+      "title": "權限標籤",
+      "description": "權限面板的名稱",
+      "type": "string",
+      "default": "權限"
+    },
+    "panels": {
+      "title": "面板",
+      "description": "以逗號分隔、依顯示順序：main, codex, git, architect, gate, agents, loops, receipt, log。省略的面板不顯示。",
+      "type": "string",
+      "default": "main,codex,git,architect,gate,agents,loops,receipt,log"
+    },
+    "motion": {
+      "title": "動畫",
+      "description": "有實際工作時讓連接線動起來，或保持靜止",
+      "type": "string",
+      "options": [
+        "while-active",
+        "off"
+      ],
+      "default": "while-active"
+    },
+    "moments": {
+      "title": "顧問時機",
+      "description": "顯示每次諮詢推測的時機（規劃前、連續錯誤、完成前）",
+      "type": "boolean",
+      "default": true
+    },
+    "matchDescriptions": {
+      "title": "比對 agent 說明",
+      "description": "agent 的說明（不只名稱）符合樣式時也算顧問",
+      "type": "boolean",
+      "default": false
+    },
+    "maxCards": {
+      "title": "卡片上限",
+      "description": "並排顯示的子代理卡片數；超過就改為泳道（1-6）",
+      "type": "number",
+      "default": 3
+    },
+    "layout": {
+      "title": "版面",
+      "description": "auto：在輸入框上方時為最多 8 列的摘要，dock 時 110 欄以上為兩欄，其餘為單欄",
+      "type": "string",
+      "options": [
+        "auto",
+        "compact",
+        "wide",
+        "mini"
+      ],
+      "default": "auto"
+    },
+    "palette": {
+      "title": "配色",
+      "description": "theme 跟隨 Claude Code 主題（亮、暗、色盲）；pastel 是為深色終端機調的固定色",
+      "type": "string",
+      "options": [
+        "theme",
+        "pastel"
+      ],
+      "default": "theme"
+    },
+    "openOnStart": {
+      "title": "啟動時開啟",
+      "description": "session 開始時開啟面板",
+      "type": "boolean",
+      "default": true
+    },
+    "statusLine": {
+      "title": "狀態列",
+      "description": "在狀態列顯示上下文、子代理、諮詢與拒絕次數",
+      "type": "boolean",
+      "default": true
+    }
+  }
 }

@@ -1,5 +1,5 @@
 import type { LiveSession, WaitReason, WaitingRow } from '../../types'
-import { ago, plain } from './format'
+import { ago, plain } from './plain'
 
 // Each session keeps one small mark file, named by its pid, saying whether it
 // is waiting on the person right now and since when. The session id inside it

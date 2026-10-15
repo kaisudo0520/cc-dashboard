@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { describeCodex, sessionIdFrom } from '../hooks/lib/codex'
+import { describeCodex } from '../hooks/lib/codex'
 
 const ID = '019a1b2c-3d4e-7f80-9a1b-2c3d4e5f6071'
 
@@ -258,36 +258,13 @@ test('a heredoc after codex exec is the prompt: the run is seen, and the prompt\
   expect(describeCodex("codex exec - <<'EOF'\n--sandbox workspace-write\nEOF")?.purpose).toBe('Codex')
 })
 
-test('codex exec resume is a continued talk and names its session from the id argument', async () => {
-  expect(describeCodex(`codex exec resume ${ID} - < next.md`)).toEqual({ purpose: 'Codex 續談', sessionId: ID })
-  expect(describeCodex(`codex exec -m gpt-6-sol -c model_reasoning_effort=high resume ${ID} -`)).toEqual({
-    purpose: 'Codex 續談',
-    sessionId: ID,
-  })
-  expect(describeCodex(`codex exec resume -m gpt-6-sol ${ID} -`)?.sessionId).toBe(ID)
-})
-
-test('a resume with no id on the command line leaves the session unknown', async () => {
+test('codex exec resume is a continued talk, with or without an id on the line', async () => {
+  expect(describeCodex(`codex exec resume ${ID} - < next.md`)).toEqual({ purpose: 'Codex 續談' })
+  expect(describeCodex(`codex exec -m gpt-6-sol -c model_reasoning_effort=high resume ${ID} -`)).toEqual({ purpose: 'Codex 續談' })
   expect(describeCodex('codex exec resume --last -')).toEqual({ purpose: 'Codex 續談' })
 })
 
 test('the word resume inside a prompt is not a resume', async () => {
   expect(describeCodex('codex exec "please resume the work" --sandbox read-only')?.purpose).toBe('Codex 規劃草稿')
   expect(describeCodex('codex exec --sandbox read-only resume-notes.md')?.purpose).toBe('Codex 規劃草稿')
-})
-
-test('sessionIdFrom reads the session id line codex prints', async () => {
-  expect(sessionIdFrom(`OpenAI Codex v0.1\n--------\nworkdir: /w\nsession id: ${ID}\n--------`)).toBe(ID)
-  expect(sessionIdFrom('Session ID:   ' + ID)).toBe(ID)
-})
-
-test('sessionIdFrom takes the first text that has one, and nothing when none does', async () => {
-  expect(sessionIdFrom(undefined, 'no id here', `session id: ${ID}`)).toBe(ID)
-  expect(sessionIdFrom('session id: not-a-uuid')).toBeUndefined()
-  expect(sessionIdFrom()).toBeUndefined()
-})
-
-test('sessionIdFrom only looks at the head of a text', async () => {
-  const far = `${'x'.repeat(20_000)}\nsession id: ${ID}`
-  expect(sessionIdFrom(far)).toBeUndefined()
 })

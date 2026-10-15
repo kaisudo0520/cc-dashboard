@@ -1,15 +1,11 @@
-// Reading a `codex exec` call: what the shell command says it is for and which
-// Codex session it talks to. Plain text in, plain data out; the hooks do the I/O.
+// Reading a `codex exec` call: what the shell command says it is for. The pane
+// shows each run as a subagent card. Plain text in, plain data out.
 
 import { argumentsEnd, commandAfter, maskShell } from './shell-mask'
 import type { Shell } from './shell-mask'
 
 /** What a shell command that runs `codex exec` tells about the run. */
-export type CodexCall = { purpose: string; note?: string; sessionId?: string }
-
-const UUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-const UUID_RE = new RegExp(UUID)
-const SESSION_LINE = new RegExp(`session id:\\s*(${UUID})`, 'i')
+export type CodexCall = { purpose: string; note?: string }
 
 // `codex exec` counts only in command position (see ./shell-mask): in the code of
 // the command, with quoted strings, comments and heredoc bodies taken out, so
@@ -33,9 +29,6 @@ const SANDBOX_PURPOSE: Readonly<Record<string, string>> = {
 }
 const RESUME_PURPOSE = 'Codex 續談'
 const PLAIN_PURPOSE = 'Codex'
-
-/** How much of a text is searched for the session line: codex prints it in its header. Nothing more of an output file is kept. */
-export const HEAD_CHARS = 8192
 
 // The sandbox the run asks for: `--sandbox=X`, `--sandbox X` or `-s X`, the flag as the code has it, the value as written.
 const sandboxOf = (maskedArgs: string, args: string): string | undefined => {
@@ -74,23 +67,9 @@ export const describeCodex = (call: string, description?: string, shell: Shell =
   const args = command.slice(execEnd, argsEnd)
   const note = description === undefined || description === '' ? {} : { note: description }
   const resume = resumeArgs(args)
-  if (resume !== undefined) {
-    const sessionId = UUID_RE.exec(resume)?.[0]
-
-    return { purpose: RESUME_PURPOSE, ...note, ...(sessionId === undefined ? {} : { sessionId }) }
-  }
+  if (resume !== undefined) return { purpose: RESUME_PURPOSE, ...note }
 
   const sandbox = sandboxOf(code.slice(execEnd, argsEnd), args)
 
   return { purpose: SANDBOX_PURPOSE[sandbox ?? ''] ?? PLAIN_PURPOSE, ...note }
-}
-
-/** The Codex session id from the first of `texts` that has a `session id:` line in its head. */
-export const sessionIdFrom = (...texts: readonly (string | undefined)[]): string | undefined => {
-  for (const text of texts) {
-    const id = SESSION_LINE.exec((text ?? '').slice(0, HEAD_CHARS))?.[1]
-    if (id !== undefined) return id
-  }
-
-  return undefined
 }
