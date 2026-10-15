@@ -2,6 +2,8 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
+import { cells } from '../hooks/core'
+
 // The single-column pane seats main|Codex and branch|gate side by side from 70 columns. A stand-in
 // engine answers the reads (as dashboard-extras does); the test kit hands back the tree, not its paint,
 // so a row of equal height is read from its props: a row Box that stretches two boxes with no height.
@@ -52,6 +54,8 @@ const engine = (on: On, world: { codex?: boolean; git?: boolean } = {}) => {
   on('classic.PermissionRequest', () => ({}))
   on('classic.Stop', () => ({}))
   on('classic.UserPromptSubmit', () => ({}))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  on('session.compact', (_$, e) => ({ messages: e.messages }))
   on('session.id', () => ({ value: 'session-a' }))
   on('session.authorize', () => ({ value: null }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
@@ -118,9 +122,10 @@ const rowOf = (tree: unknown, left: RegExp, right: RegExp) =>
 /** The round-bordered panel Box whose text opens with the title. */
 const panelOf = (tree: unknown, title: RegExp) => within(tree, n => isBox(n) && n.props?.borderStyle === 'round' && title.test(textOf(n)))[0]
 
-const MAIN = /^[^]*· main/
+// The main box opens `<model> · main`; the branch box `🔀 main` has no dot before its name.
+const MAIN = /^[^·]* · main/
 const CODEX = /^Codex · /
-const BRANCH = /^branch · /
+const BRANCH = /^🔀 /
 const GATE = /^GATE · /
 
 test('at 78 columns main|Codex and branch|gate share rows, each pair stretched to one height', async ($, on) => {
@@ -210,7 +215,7 @@ test('the compact layout never pairs', async ($, on) => {
   await ui.unmount()
 })
 
-// A request that went through, in the mode the person set: the main box has an effort, a mode, a count and a speed.
+// A request that went through, in the mode the person set: the main box has an effort, a mode and a count (and no speed line).
 const requested = async ($: Engine, clock: { advance: (ms: number) => Promise<void> }) => {
   await $.classic.UserPromptSubmit({ prompt: 'go', permission_mode: 'auto' } as never)
   const s = $.turn.step({ turnId: 'S1', index: 0, model: 'claude-opus-5-5', messageCount: 1, effort: 'xhigh' } as never)
@@ -224,19 +229,19 @@ const requested = async ($: Engine, clock: { advance: (ms: number) => Promise<vo
   await s.result
 }
 
-test('two to a row, the main box says its effort, mode and count on one dotted line, and its speed after "last"', async ($, on) => {
+test('two to a row, the main box says its effort, mode and count on one dotted line, and neither layout draws a speed line', async ($, on) => {
   const clock = engine(on)
   await dashboard($, 'refresh')
   await requested($, clock)
   const narrow = await $.ui.mount(props(78))
   expect(await narrow.find({ text: /^▮▮▮▮ xhigh · auto · 1 req$/ })).toBeDefined()
-  expect(await narrow.find({ text: /^last ttft 0\.8s · 60 tok\/s$/ })).toBeDefined()
+  expect(await narrow.find({ text: /ttft|tok\/s|^last/ })).toBeUndefined()
   expect(await narrow.find({ text: /^effort / })).toBeUndefined()
   await narrow.unmount()
   // Stacked, it reads as it always did.
   const stacked = await $.ui.mount(props(64))
   expect(await stacked.find({ text: /^effort ▮▮▮▮ xhigh {3}mode auto {3}1 req$/ })).toBeDefined()
-  expect(await stacked.find({ text: /^last req {2}ttft 0\.8s · 60 tok\/s$/ })).toBeDefined()
+  expect(await stacked.find({ text: /ttft|tok\/s|last req/ })).toBeUndefined()
   await stacked.unmount()
 })
 
@@ -258,12 +263,12 @@ test('two to a row, the branch box has its sync on a row of its own and the two 
   await check($)
   const narrow = await $.ui.mount(props(78))
   const box = panelOf(await narrow.drawn(), BRANCH)
-  expect(kids(box).slice(0, 4).map(textOf)).toEqual(['branch · main', '↔ origin/main ↑2 ↓1', 'unreviewed 2 files', 'changed 2 files'])
+  expect(kids(box).slice(0, 4).map(textOf)).toEqual(['🔀 main', '↔ origin/main ↑2 ↓1', 'unreviewed 2 files', 'changed 2 files'])
   expect(kids(box)[1]?.props?.dimColor).toBe(true)
   await narrow.unmount()
   const stacked = await $.ui.mount(props(64))
   const alone = panelOf(await stacked.drawn(), BRANCH)
-  expect(kids(alone).slice(0, 2).map(textOf)).toEqual(['branch · main↔ origin/main ↑2 ↓1', 'unreviewed 2 files · changed 2 files'])
+  expect(kids(alone).slice(0, 2).map(textOf)).toEqual(['🔀 main↔ origin/main ↑2 ↓1', 'unreviewed 2 files · changed 2 files'])
   await stacked.unmount()
 })
 
@@ -331,4 +336,98 @@ test('only panels the person listed side by side pair', { options: { panels: 'ma
   expect(rowOf(tree, MAIN, CODEX)).toBeUndefined() // the log sits between them
   expect(rowOf(tree, BRANCH, GATE)).toBeDefined()
   await ui.unmount()
+})
+
+// ---------------------------------------------------------------- the context line
+
+// The engine reads a context of 116k of 200k tokens ...
+const measured = async ($: Engine) => {
+  await $.session.measure({ context: { window: 200_000, tokens: 116_000, percent: 58 }, rateLimits: [], changed: ['context'] } as never)
+}
+// ... and, after this, one compaction has happened.
+const compacted = async ($: Engine) => {
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never)
+}
+const CTX = /^ctx +[━─]+ +58% 116k\/200k {2}⟲1$/
+
+/** The Text nodes in drawing order, and whether each sits inside a round-bordered box. */
+const textLines = (n: unknown, inside = false): { text: string; inside: boolean }[] =>
+  !isNode(n)
+    ? []
+    : n.type === 'Text'
+      ? [{ text: textOf(n), inside }]
+      : kids(n).flatMap(c => textLines(c, inside || (isBox(n) && n.props?.borderStyle === 'round')))
+
+for (const [columns, shape] of [[78, 'two to a row'], [64, 'stacked']] as const) {
+  test(`${shape}: the context is a line of its own, no box, below the Codex box and above the branch`, async ($, on) => {
+    engine(on)
+    await dashboard($, 'refresh')
+    await check($)
+    await measured($)
+    await compacted($)
+    const ui = await $.ui.mount(props(columns))
+    const lines = textLines(await ui.drawn())
+    await ui.unmount()
+    const at = (re: RegExp) => lines.findIndex(l => re.test(l.text))
+    const [weekly, ctx, branch] = [at(/^weekly /), at(CTX), at(/^🔀 main/)]
+    expect([weekly >= 0, ctx > weekly, branch > ctx]).toEqual([true, true, true])
+    expect(lines[ctx]?.inside).toBe(false) // not in the main box, nor in any
+    expect(lines.filter(l => l.inside).some(l => /^ctx /.test(l.text))).toBe(false)
+  })
+}
+
+// The ctx bar takes what the label, percent and detail leave of the whole pane (no 40-cell cap): the line is W cells.
+test('the context line spans the whole pane, with the compaction note and without', async ($, on) => {
+  engine(on)
+  await dashboard($, 'refresh')
+  await check($)
+  await measured($)
+  const widths = async (columns: number) => {
+    const ui = await $.ui.mount(props(columns))
+    const text = textLines(await ui.drawn()).find(l => /^ctx /.test(l.text))?.text ?? ''
+    await ui.unmount()
+    return cells(text)
+  }
+  expect([await widths(78), await widths(64), await widths(100)]).toEqual([78, 64, 100])
+  await compacted($)
+  expect([await widths(78), await widths(64), await widths(100)]).toEqual([78, 64, 100])
+})
+
+test('the context line follows the main box when there is no Codex box', async ($, on) => {
+  engine(on, { codex: false })
+  await dashboard($, 'refresh')
+  await measured($)
+  await compacted($)
+  const ui = await $.ui.mount(props(78))
+  const lines = textLines(await ui.drawn())
+  await ui.unmount()
+  const at = (re: RegExp) => lines.findIndex(l => re.test(l.text))
+  expect(at(/^Codex · /)).toBe(-1)
+  expect([at(/ · main/) < at(CTX), at(CTX) < at(/^🔀 main/), lines[at(CTX)]?.inside]).toEqual([true, true, false])
+})
+
+test('the context belongs to the main box: without it in the panels list there is no context line', { options: { panels: 'codex,git,gate,log' } }, async ($, on) => {
+  engine(on)
+  await dashboard($, 'refresh')
+  await measured($)
+  const ui = await $.ui.mount(props(78))
+  expect(await ui.find({ text: /^ctx / })).toBeUndefined()
+  await ui.unmount()
+})
+
+// With the context line in the column, the main box is a row shorter and the line takes that row.
+test('the log is given the rows the context line leaves it', async ($, on) => {
+  engine(on)
+  await dashboard($, 'refresh')
+  await check($)
+  await measured($)
+  for (let i = 1; i <= 9; i++) await $.turn.start({ text: `prompt ${i}`, turnId: `L${i}` })
+  const logRowsOf = async (columns: number, bodyRows: number) => {
+    const ui = await $.ui.mount(props(columns, bodyRows))
+    const n = within(await ui.drawn(), x => x.type === 'Text' && /^\d\d:\d\d:\d\d$/.test(textOf(x))).length
+    await ui.unmount()
+    return n
+  }
+  // Stacked: 35 rows of panels (the main box 4, the context 1), so 44 rows leave 6; two to a row: 27, so 36 leave 6.
+  expect([await logRowsOf(64, 44), await logRowsOf(78, 36)]).toEqual([6, 6])
 })

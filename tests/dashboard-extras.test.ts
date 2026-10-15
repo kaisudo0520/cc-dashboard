@@ -13,6 +13,7 @@ import {
   LINE_GLYPHS,
   limitWindow,
   meterPercent,
+  lineMeterWidth,
   meterWidth,
   padCells,
   pathLines,
@@ -298,7 +299,7 @@ test('the branch panel says how many files are unreviewed and how many changed, 
     expect(g).not.toContain('-w')
   }
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: 'branch · main' })).toBeDefined()
+  expect(await ui.find({ text: '🔀 main' })).toBeDefined()
   expect(await ui.find({ text: 'unreviewed 2 files' })).toBeDefined()
   expect(await ui.find({ text: 'changed 2 files' })).toBeDefined()
   expect(await ui.find({ text: '↔ origin/main ↑2 ↓1' })).toBeDefined()
@@ -367,7 +368,7 @@ test('the inline summary carries Codex and the branch on one row and stays withi
   const ui = await $.ui.mount(props(110, 'inline'))
   const root = (await ui.drawn()) as { children?: unknown[] }
   expect((root.children ?? []).filter(Boolean).length <= 8).toBe(true)
-  expect(await ui.find({ text: /Codex 5h 13% · weekly 40%   ⎇ main unreviewed 2 files · changed 2 files/ })).toBeDefined()
+  expect(await ui.find({ text: /Codex 5h 13% · weekly 40%   🔀 main unreviewed 2 files · changed 2 files/ })).toBeDefined()
   expect(await ui.find({ text: /\+3 more agents/ })).toBeDefined()
   await ui.unmount()
 })
@@ -573,4 +574,12 @@ test('at a stop, a background run the engine no longer lists is done; one it lis
   const done = await $.ui.mount(props(64))
   expect(await done.find({ text: /✓ done/ })).toBeDefined()
   await done.unmount()
+})
+
+test('a meter line with no frame takes the whole width less its label, percent and detail, with no cap', () => {
+  expect(lineMeterWidth(30, 3, '116k/200k  ⟲2')).toBe(6) // 30 - 3 label - 5 percent - 3 spaces - 13 detail
+  expect(lineMeterWidth(78, 3, '116k/200k  ⟲2')).toBe(54)
+  expect(lineMeterWidth(78, 3, '116k/200k')).toBe(58)
+  expect(lineMeterWidth(10, 3, '116k/200k')).toBe(4) // never under four cells
+  expect(meterWidth(200, 3, ['116k/200k'])).toBe(40) // the boxed rows keep their cap
 })

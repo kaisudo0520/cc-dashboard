@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Panel } from '../hooks/core'
-import { cells, narrowEffort, pairRows, pairWidths, wrapRows } from '../hooks/core'
+import { cells, narrowEffort, pairRows, pairWidths, withCtx, wrapRows } from '../hooks/core'
 
 // Side-by-side panels: in a single-column pane at least 70 columns wide, main|Codex and branch|gate
 // share a row. These are the pure pieces; tests/pairs-pane.test.ts draws them.
@@ -63,4 +63,19 @@ test('items that wrap onto rows are counted by how many fit a row with the gap b
   expect(wrapRows([12, 14, 10], 28, 2)).toBe(2) // 12 + 2 + 14, then 10
   expect(wrapRows([20, 20, 20], 30, 2)).toBe(3)
   expect(wrapRows([50], 30, 2)).toBe(1) // one too wide for a row still takes one
+})
+
+test('the branch marker 🔀 takes two cells; the narrow symbols the rows use stay at one', () => {
+  expect([cells('🔀'), cells('⟲'), cells('⏱'), cells('✓')]).toEqual([2, 1, 1, 1])
+  expect(cells('🔀 main')).toBe(7)
+})
+
+test('the context line follows the main box, or the Codex box under it; without the main box there is none', () => {
+  expect(withCtx(pairRows(ALL))).toEqual([['main', 'codex'], 'ctx', ['git', 'gate'], 'architect', 'agents', 'loops', 'receipt', 'log'])
+  expect(withCtx(ALL)).toEqual(['main', 'codex', 'ctx', 'git', 'architect', 'gate', 'agents', 'loops', 'receipt', 'log'])
+  expect(withCtx(['main', 'git', 'log'])).toEqual(['main', 'ctx', 'git', 'log'])
+  expect(withCtx(['main', 'log', 'codex'])).toEqual(['main', 'ctx', 'log', 'codex']) // Codex is not next to it
+  expect(withCtx(['codex', 'main', 'log'])).toEqual(['codex', 'main', 'ctx', 'log'])
+  expect(withCtx(['codex', 'git', 'log'])).toEqual(['codex', 'git', 'log'])
+  expect(withCtx([])).toEqual([])
 })

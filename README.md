@@ -9,9 +9,9 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 | 面板 | 顯示 | 來源 |
 | :- | :- | :- |
 | **等你回應**（標頭下一行紅字） | 只在「另一個仍在執行的 Claude Code session 正在等你」時出現：`! waiting on you: <session 名稱> <permission／question> <等待時間，如 3m ago>`，多個時加 ` · +<n> more`（等最久的在前）。沒人在等就整行不存在 | 見下方「等你回應」 |
-| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊；上次主迴圈請求的首字時間與 tok/s（`last req  ttft 0.8s · 42 tok/s`）；最下方單獨一行上下文量表 `ctx` 與壓縮次數（⟲） | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
+| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊。上下文量表 `ctx`（已用 %、`116k/200k`、壓縮次數 ⟲）不在框內：它是主模型框（旁邊有 Codex 框時，是它們）正下方的單獨一行，沒有框線，長條撐滿整個窗格寬度（不像框內的長條最長 40 格）；`panels` 沒有 `main` 時不顯示，讀不到上下文時也不顯示 | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
 | **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`） | 見下方「Codex 額度」 |
-| **分支** | `branch · <分支名>`、`↔ <upstream> ↑ahead ↓behind`（沒有 upstream 顯示 `no upstream`）；**`unreviewed N files · changed M files`**。全部審過顯示 `✓ unreviewed 0`，無法判斷時顯示 `unreviewed ?`（絕不顯示成 0）。有未審檔案時 `u` 展開清單（最多 8 行，其餘以 `… N more` 計） | 見下方「分支」 |
+| **分支** | `🔀 <分支名>`、`↔ <upstream> ↑ahead ↓behind`（沒有 upstream 顯示 `no upstream`）；**`unreviewed N files · changed M files`**。全部審過顯示 `✓ unreviewed 0`，無法判斷時顯示 `unreviewed ?`（絕不顯示成 0）。有未審檔案時 `u` 展開清單（最多 8 行，其餘以 `… N more` 計） | 見下方「分支」 |
 | **顧問** | 諮詢時間軸、是否正在諮詢、上次耗時；推測的時機（`before a plan`／`error repeats`／`before done`，標 `(inferred)`）；子代理顧問建議的第一行 | 符合樣式的 agent 類型，或 assistant 列中的 server tool |
 | **權限** | 每次權限檢查一格：綠＝規則允許、藍＝分類器或你允許後執行、黃＝待決、紅 ✗＝拒絕，子代理內的較暗。總計，與依工具類別（`f` file／`s` shell／`o` other）展開最近 5 筆（憑證遮蔽） | `tool.check`，由其後的 `tool.call` 結算 |
 | **子代理** | 放得下時並排卡片：任務、類型、ctx 與輸出 tokens、步數、計時、紅色 `max_tokens`；放不下時改為同一時間軸的泳道。`1`–`6` 展開：完整任務、最近 3 個工具呼叫、回答開頭。**`codex exec` 也是一張卡片**：類型 `Codex`、任務為用途（`Codex plan draft`／`Codex review`／`Codex resume`／`Codex`，加上呼叫的 description），計入 running，不顯示 Codex session id | `agent.spawn`、`turn.step`、`tool.call`、`turn.complete`；Codex 見下方 |
@@ -19,7 +19,7 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 | **回合收據** | 進行中的回合或上一回合：耗時、子代理數、編輯數、錯誤數 | `turn.start`、`turn.complete` |
 | **工作紀錄** | 提示、啟動、完成、諮詢、編輯、錯誤與拒絕；檢視某子代理 transcript 時只列它的 | 以上全部 |
 
-沒東西可顯示的面板不占空間：沒有子代理就沒有子代理面板，不在 git repository 裡就沒有分支面板，讀不到 Codex 就沒有 Codex 面板。寬版（dock 且 110 欄以上）左欄為主模型、Codex、顧問、權限，右欄為分支、子代理、其他迴圈、回合收據，工作紀錄在最下方全寬。單欄且版面為 `auto`（窗格窄於 110 欄）時，窗格達 70 欄（dock 為終端 40% 時，約 180 欄的終端）起，兩組面板並排成一列：主模型｜Codex、分支｜權限（權限移到顧問之上），其後依序是顧問、子代理、其他迴圈、回合收據、工作紀錄；並排的兩個框等高，較矮的那個向下拉長。其中一個沒有內容，或 `panels` 設定讓兩者不相鄰，另一個照舊占滿整列；`compact` 不並排，不到 70 欄則維持堆疊。並排時字樣改用較窄的寫法：主模型框的努力程度、模式與請求數併成一行 `▮▮▮▯ high · auto · 12 req`，速度行是 `last ttft 0.8s · 60 tok/s`；Codex 框省略 `quota · used`；分支框把同步狀態、未審與更新檔案數各放一列；權限框的摘要與 f／s／o 按鈕會換行，不會截掉 `✗ N denied`。在輸入框上方（非全螢幕）時是最多 8 列的摘要：第一列是模型、上下文與 Claude 的 `5h 2% · 7d 3%`（來自 API 回應，session 的第一次回應之後才有），紅字提醒在第二行，Fable、Codex 與分支合成一行：`Fable 31%   Codex 5h 13% · weekly 40%   ⎇ main unreviewed 2 files · changed 5 files`（這兩行出現時子代理少列幾個，總數不超過 8）。
+沒東西可顯示的面板不占空間：沒有子代理就沒有子代理面板，不在 git repository 裡就沒有分支面板，讀不到 Codex 就沒有 Codex 面板。寬版（dock 且 110 欄以上）左欄為主模型、Codex、顧問、權限，右欄為分支、子代理、其他迴圈、回合收據，工作紀錄在最下方全寬。單欄且版面為 `auto`（窗格窄於 110 欄）時，窗格達 70 欄（dock 為終端 40% 時，約 180 欄的終端）起，兩組面板並排成一列：主模型｜Codex、分支｜權限（權限移到顧問之上），其後依序是顧問、子代理、其他迴圈、回合收據、工作紀錄；並排的兩個框等高，較矮的那個向下拉長。其中一個沒有內容，或 `panels` 設定讓兩者不相鄰，另一個照舊占滿整列；`compact` 不並排，不到 70 欄則維持堆疊。並排時字樣改用較窄的寫法：主模型框的努力程度、模式與請求數併成一行 `▮▮▮▯ high · auto · 12 req`；Codex 框省略 `quota · used`；分支框把同步狀態、未審與更新檔案數各放一列；權限框的摘要與 f／s／o 按鈕會換行，不會截掉 `✗ N denied`。在輸入框上方（非全螢幕）時是最多 8 列的摘要：第一列是模型、上下文與 Claude 的 `5h 2% · 7d 3%`（來自 API 回應，session 的第一次回應之後才有），紅字提醒在第二行，Fable、Codex 與分支合成一行：`Fable 31%   Codex 5h 13% · weekly 40%   🔀 main unreviewed 2 files · changed 5 files`（這兩行出現時子代理少列幾個，總數不超過 8）。
 
 ## 側欄（全螢幕）
 
@@ -82,7 +82,6 @@ Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每
 - 顧問的時機：`before a plan`＝本回合還沒有編輯，`error repeats`＝主迴圈連續 2 次以上錯誤，`before done`＝已有編輯。標 `(inferred)`，`moments: false` 可關掉。
 - server 端的顧問（如 `advisor`）內容是加密的：只能計次與計時。
 - 子代理的 ctx 是最近一次請求的完整輸入，不是費用。
-- 首字時間與 tok/s 是在本 mod 的 `turn.step` hook 量的，包含其下的一切（其他 plugin 的 hook、引擎、網路與重試）。
 
 ## 設定
 

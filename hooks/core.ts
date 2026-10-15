@@ -27,7 +27,7 @@ export const SCHEMA_VERSION = 3
 
 // ---------------------------------------------------------------- defaults
 
-export const DEFAULT_MAIN: Main = { model: '', effort: '', mode: '', steps: 0, isRunning: false, speed: null }
+export const DEFAULT_MAIN: Main = { model: '', effort: '', mode: '', steps: 0, isRunning: false }
 export const DEFAULT_USAGE: Usage = {
   pct: null,
   tokens: null,
@@ -261,24 +261,6 @@ export const fmtClock = (ms: number) => (ms > 0 ? new Date(ms).toTimeString().sl
 /** `1 error`, `2 errors`. */
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
-/**
- * How fast a request answered, from three readings of the clock: when it was sent, when its first
- * piece of response arrived, and when it stopped. Null when no response came. `tokPerS` is null
- * when there is no usage or no time between the first piece and the stop to divide by.
- */
-export const stepSpeed = (sentAt: number, firstAt: number | null, stopAt: number, outTokens: number | null) => {
-  if (firstAt === null) return null
-  const decodeMs = stopAt - firstAt
-  return {
-    ttftMs: Math.max(0, firstAt - sentAt),
-    tokPerS: outTokens !== null && outTokens > 0 && decodeMs > 0 ? (outTokens * 1000) / decodeMs : null,
-  }
-}
-
-/** `ttft 0.8s · 42 tok/s`; the rate is left off when it is unknown. */
-export const fmtSpeed = (s: { ttftMs: number; tokPerS: number | null }) =>
-  `ttft ${(s.ttftMs / 1000).toFixed(1)}s` + (s.tokPerS !== null ? ` · ${Math.round(s.tokPerS)} tok/s` : '')
-
 /** A gauge of `width` cells: ▰ filled, ▱ empty, or in the glyphs given. */
 export const gauge = (pct: number, width: number, [filled, empty]: readonly [string, string] = ['▰', '▱']) => {
   const full = Math.max(0, Math.min(width, Math.round((pct / 100) * width)))
@@ -497,9 +479,9 @@ export const lanes = (cards: AgentCard[], now: number, width: number) => {
 /** How many log lines fit: what the other panels leave, never fewer than 4 nor more than 8. */
 export const logRows = (bodyRows: number, used: number) => Math.max(4, Math.min(8, bodyRows - used - 3))
 
-/** Terminal cells a string takes: CJK and full-width characters take two. */
+/** Terminal cells a string takes: CJK, full-width characters and emoji (U+1F300 to U+1FAFF, the branch marker among them) take two. */
 export const cells = (s: string) =>
-  [...s].reduce((n, ch) => n + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1), 0)
+  [...s].reduce((n, ch) => n + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6\u{1f300}-\u{1faff}]/u.test(ch) ? 2 : 1), 0)
 
 /** Legend items that fit on one row of `width` cells, in order; the rest are dropped. */
 export const fitLegend = <T extends { label: string }>(items: T[], width: number) => {
@@ -626,6 +608,13 @@ export const meterPercent = (m: Meter) => `${m.isStale ? '~' : ''}${m.pct ?? 0}%
 export const meterWidth = (panelW: number, labelW: number, details: readonly string[]) =>
   Math.min(METER_MAX, Math.max(METER_MIN, panelW - PANEL_FRAME - labelW - METER_PCT_W - 3 - Math.max(METER_DETAIL_W, ...details.map(cells))))
 
+/**
+ * The bar of a line drawn without a box, alone in its row (the context): whatever the label, the
+ * percent and its own detail leave of the whole `lineW`, with no upper cap, so the line spans the pane.
+ */
+export const lineMeterWidth = (lineW: number, labelW: number, detail: string) =>
+  Math.max(METER_MIN, lineW - labelW - METER_PCT_W - 3 - cells(detail))
+
 /** `s` padded with spaces to `width` cells, a wide character counting two. */
 export const padCells = (s: string, width: number) => s + ' '.repeat(Math.max(0, width - cells(s)))
 
@@ -737,6 +726,21 @@ export const pairRows = (panels: readonly Panel[]): PairRow[] => {
     rows.push(pair ?? (a as Panel))
   }
   return rows
+}
+
+/** A row of the single column: a panel, two side by side, or the context line under the main box. */
+export type ColumnRow = PairRow | 'ctx'
+
+/**
+ * The column's rows with the context line put in: right after the row that holds the main box, or
+ * after the Codex box when that is the next row. The context belongs to the main box, so a column
+ * without the main box has no context line.
+ */
+export const withCtx = (rows: readonly PairRow[]): ColumnRow[] => {
+  const main = rows.findIndex(r => r === 'main' || (typeof r !== 'string' && r.includes('main')))
+  if (main < 0) return [...rows]
+  const at = rows[main] === 'main' && rows[main + 1] === 'codex' ? main + 2 : main + 1
+  return [...rows.slice(0, at), 'ctx', ...rows.slice(at)]
 }
 
 /** The cells the effort bar and its space take ahead of the narrow effort line's effort. */

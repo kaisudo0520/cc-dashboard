@@ -13,7 +13,6 @@ import {
   endConsult,
   fitLegend,
   fmtResetIn,
-  fmtSpeed,
   gateSummary,
   lanes,
   limitLabel,
@@ -35,7 +34,6 @@ import {
   settleCheck,
   trimRecent,
   startConsult,
-  stepSpeed,
 } from '../hooks/core'
 import type { Check } from '../types'
 
@@ -185,15 +183,6 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(titleLines('Write tinyqueue test suite', 13, 16)).toEqual(['Write', 'tinyqueue test…'])
   expect(titleLines('Short', 13, 16)).toEqual(['Short', ''])
   expect(receiptOf({ ...DEFAULT_TURN, edits: 2 }, { durationMs: 1000, agentsSince: 3, reason: 'answer' })).toEqual({ durationMs: 1000, agents: 3, edits: 2, errors: 0, reason: 'answer' })
-})
-
-test('a request\'s speed: time to its first piece, then output tokens per second to the stop', () => {
-  expect(stepSpeed(1000, 1800, 3800, 120)).toEqual({ ttftMs: 800, tokPerS: 60 })
-  expect(stepSpeed(1000, null, 3800, 120)).toBe(null) // no response arrived
-  expect(stepSpeed(1000, 1800, 1800, 120)?.tokPerS).toBe(null) // nothing to divide by
-  expect(stepSpeed(1000, 1800, 3800, null)?.tokPerS).toBe(null)
-  expect(fmtSpeed({ ttftMs: 800, tokPerS: 60.4 })).toBe('ttft 0.8s · 60 tok/s')
-  expect(fmtSpeed({ ttftMs: 1250, tokPerS: null })).toBe('ttft 1.3s')
 })
 
 test('a window keeps its reset time, drawn as the time left', () => {
@@ -444,12 +433,22 @@ test("a background architect's advice is read from its hand-back", async ($, on)
 })
 
 // The drawing as lines of text, one per Text node that sits in a Box: what each row reads.
-type Drawn = { type?: string; children?: unknown[] } | string | null | undefined
+type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] } | string | null | undefined
 const textOf = (n: Drawn): string => (n == null ? '' : typeof n === 'string' ? n : (n.children ?? []).map(c => textOf(c as Drawn)).join(''))
 const drawnLines = (n: Drawn): string[] =>
   n == null || typeof n === 'string' ? [] : n.type === 'Text' ? [textOf(n)] : (n.children ?? []).flatMap(c => drawnLines(c as Drawn))
 
-test('each rate-limit window has a row of its own with the time to its reset; the context row sits apart, at the foot', async ($, on) => {
+// The lines of the Text nodes that sit inside a round-bordered box.
+const boxedLines = (n: Drawn, inside = false): string[] =>
+  n == null || typeof n === 'string'
+    ? []
+    : n.type === 'Text'
+      ? inside
+        ? [textOf(n)]
+        : []
+      : (n.children ?? []).flatMap(c => boxedLines(c as Drawn, inside || n.props?.borderStyle === 'round'))
+
+test('each rate-limit window has a row of its own with the time to its reset; the context is a line of its own below the main box', async ($, on) => {
   engine(on)
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('session.compact', (_$, e) => ({ messages: e.messages }))
@@ -464,30 +463,38 @@ test('each rate-limit window has a row of its own with the time to its reset; th
   } as never)
   const rows = async (cols: number) => {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
-    const lines = drawnLines((await ui.drawn()) as Drawn)
+    const tree = (await ui.drawn()) as Drawn
+    const lines = drawnLines(tree)
+    const boxed = boxedLines(tree)
     await ui.unmount()
     const at = (re: RegExp) => lines.findIndex(l => re.test(l))
-    return { lines, five: at(/^5h +━+─* +19% ⏱  3h10m$/), week: at(/^7d +━*─+ +3% ⏱  4d2h$/), context: at(/^ctx +━+─+ +58% 116k\/200k( +⟲1)?$/) }
+    return { lines, boxed, five: at(/^5h +━+─* +19% ⏱  3h10m$/), week: at(/^7d +━*─+ +3% ⏱  4d2h$/), context: at(/^ctx +━+─+ +58% 116k\/200k( +⟲1)?$/) }
   }
   // At 120 columns the pane is wide and the main box takes half of it.
   const panelOf = (cols: number) => (cols >= 110 ? Math.floor((cols - 2) / 2) : cols)
   for (const compacted of [false, true]) {
     if (compacted) await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never)
     for (const cols of [40, 64, 120]) {
-      const { lines, five, week, context } = await rows(cols)
+      const { lines, boxed, five, week, context } = await rows(cols)
       expect([five >= 0, week === five + 1, context > week]).toEqual([true, true, true])
       expect((lines[context] ?? '').endsWith('⟲1')).toBe(compacted)
-      // The bars share a column, a compaction note or not: each row's bar starts and ends where the others do.
-      const shown = [five, week, context].map(i => lines[i] ?? '')
-      expect(new Set(shown.map(l => l.match(/[━─]+/)?.[0].length)).size).toBe(1)
-      expect(new Set(shown.map(l => l.indexOf('%'))).size).toBe(1)
-      // Every row fits inside the box's frame and padding.
-      expect(shown.every(l => cells(l) <= panelOf(cols) - 4)).toBe(true)
+      // The two windows share a bar width and a percent column.
+      const windows = [five, week].map(i => lines[i] ?? '')
+      expect(new Set(windows.map(l => l.match(/[━─]+/)?.[0].length)).size).toBe(1)
+      expect(new Set(windows.map(l => l.indexOf('%'))).size).toBe(1)
+      // The windows fit inside the box's frame and padding.
+      expect(windows.every(l => cells(l) <= panelOf(cols) - 4)).toBe(true)
+      // The context is not in the main box (nor any box) and has the pane's whole width: no frame, bar sized by its own detail.
+      expect(boxed.some(l => /^ctx /.test(l))).toBe(false)
+      const ctxLine = lines[context] ?? ''
+      const detailW = cells(`116k/200k${compacted ? '  ⟲1' : ''}`)
+      expect(ctxLine.match(/[━─]+/)?.[0].length).toBe(panelOf(cols) - 3 - 5 - 3 - detailW)
+      expect(cells(ctxLine)).toBe(panelOf(cols))
     }
   }
 })
 
-test("the main box shows the last request's time to first token and decode speed", async ($, on) => {
+test("the main box has no speed line: a request's time to first token and decode speed are not drawn", async ($, on) => {
   const clock = engine(on)
   // The model beneath: 800 ms to its first words, then 2 s more to stop after 120 tokens.
   on('turn.step', async function* () {
@@ -498,9 +505,6 @@ test("the main box shows the last request's time to first token and decode speed
     yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage }
     return { turnId: 'S1', index: 0, answer: 'hello', toolUses: [], stopReason: 'end_turn' as const, usage }
   })
-  const before = await $.ui.mount({ ...pane(40), surface: 'terminal' })
-  expect(await before.find({ text: /ttft/ })).toBeUndefined() // nothing measured yet: no line
-  await before.unmount()
   const s = $.turn.step({ turnId: 'S1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
   const first = s.next()
   await clock.advance(800)
@@ -512,7 +516,7 @@ test("the main box shows the last request's time to first token and decode speed
   await s.result
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
-    expect(await ui.find({ text: /ttft 0\.8s · 60 tok\/s/ })).toBeDefined()
+    expect(await ui.find({ text: /ttft|tok\/s|last req/ })).toBeUndefined()
     await ui.unmount()
   }
 })

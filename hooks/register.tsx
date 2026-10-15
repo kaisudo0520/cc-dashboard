@@ -29,6 +29,7 @@ import {
   windowMeter,
   meterPercent,
   meterWidth,
+  lineMeterWidth,
   padCells,
   LINE_GLYPHS,
   limitWindow,
@@ -56,7 +57,6 @@ import {
   lanes,
   limitLabel,
   limitOf,
-  fmtSpeed,
   listOf,
   logRows,
   momentOf,
@@ -70,6 +70,7 @@ import {
   PANEL_FRAME,
   pairRows,
   pairWidths,
+  withCtx,
   SVG_COLORS,
   parseConfig,
   prettyModel,
@@ -81,11 +82,10 @@ import {
   settleCheck,
   shorten,
   startConsult,
-  stepSpeed,
   stepLoop,
   wrapRows,
 } from './core'
-import type { Config, Meter, Panel, PairRow } from './core'
+import type { ColumnRow, Config, Meter, Panel, PairRow } from './core'
 import { describeCodex } from './lib/codex'
 import { ROLLOUT_QUERY, readCodexQuota } from './lib/codex-quota'
 import { FABLE_POLL_MS, fableFromUsage, nextFableDelay } from './lib/fable'
@@ -684,21 +684,7 @@ export const register: Register = (on, options) => {
         const x = normalize(DEFAULT_MAIN, m)
         return { ...x, model: e.model, effort: String(e.effort ?? x.effort), steps: x.steps + 1 }
       })
-      // Time the response as it passes: the first piece that is not the engine's envelope, then the
-      // stop chunk. Two clock reads in the stream and nothing stored until it has ended.
-      const sentAt = await $.clock.now()
-      let firstAt: number | null = null
-      let stopAt: number | null = null
-      const s = next(e)
-      for await (const c of s) {
-        if (c.kind === 'stop') stopAt = await $.clock.now()
-        else if (firstAt === null && c.kind !== 'engine') firstAt = await $.clock.now()
-        yield c
-      }
-      const result = await s.result
-      const speed = result.usage && stopAt !== null ? stepSpeed(sentAt, firstAt, stopAt, result.usage.output_tokens) : null
-      if (speed) await update($, main, m => ({ ...normalize(DEFAULT_MAIN, m), speed }))
-      return result
+      return yield* next(e)
     }
     const result = yield* next(e)
     const id = e.agentId
@@ -1029,7 +1015,14 @@ export const register: Register = (on, options) => {
     const panels = cfg.panels.filter(p => !isEmpty[p])
     // The single column seats two panels to a row when the pane is wide enough and the person left the layout on auto.
     const pairing = layout === 'auto' && !isWide ? pairWidths(W) : null
-    const rows = pairing ? pairRows(panels) : panels
+    // The context is a line of its own under the main box (under the Codex box when that comes next), once it is read.
+    const ctxMeter: Meter | null =
+      u.pct !== null
+        ? { label: 'ctx', pct: Math.round(u.pct), isStale: false, detail: u.tokens !== null ? `${kTokens(u.tokens)}/${kTokens(u.window)}` : '' }
+        : null
+    const ctxNote = u.compactions > 0 ? `  ⟲${u.compactions}` : ''
+    const withContext = (list: readonly PairRow[]): ColumnRow[] => (ctxMeter ? withCtx(list) : [...list])
+    const rows = withContext(pairing ? pairRows(panels) : panels)
     const isPaired = (a: Panel, b: Panel) => rows.some(r => typeof r !== 'string' && r[0] === a && r[1] === b)
     const decider = m.mode === 'auto' ? 'classifier' : 'you'
 
@@ -1085,19 +1078,13 @@ export const register: Register = (on, options) => {
 
     // ---- main
     const effortN = { low: 1, medium: 2, high: 3, xhigh: 4, max: 4 }[m.effort] ?? 0
-    // Claude's windows and Fable, a row each; the context sits apart, at the foot of the box.
+    // Claude's windows and Fable, a row each.
     const usageMeters = [
       ...u.limits.slice(0, 2).map(l => windowMeter(limitLabel(l.kind), limitWindow(l), now)),
       ...(fableWindow ? [windowMeter(fb?.isStale ? 'Fable~' : 'Fable', fableWindow, now)] : []),
     ]
-    const ctxMeter: Meter | null =
-      u.pct !== null
-        ? { label: 'ctx', pct: Math.round(u.pct), isStale: false, detail: u.tokens !== null ? `${kTokens(u.tokens)}/${kTokens(u.window)}` : '' }
-        : null
-    const ctxNote = u.compactions > 0 ? `  ⟲${u.compactions}` : ''
-    const mainMeters = ctxMeter ? [...usageMeters, ctxMeter] : usageMeters
     const mainPanel = (w: number, isNarrow = false) => {
-      const layout = meterLayout(mainMeters, w, [...usageMeters.map(r => r.detail), ...(ctxMeter ? [ctxMeter.detail + ctxNote] : [])])
+      const layout = meterLayout(usageMeters, w)
       const effortBar = '▮'.repeat(effortN) + '▯'.repeat(4 - effortN)
       const narrowLine = narrowEffort(m.effort, m.mode, m.steps, w - PANEL_FRAME)
       return (
@@ -1128,11 +1115,12 @@ export const register: Register = (on, options) => {
             </Text>
           )}
           {usageMeters.map((row, i) => meterRow(`usage-${i}`, row, layout, C.main))}
-          {m.speed ? <Text dimColor wrap="truncate">{`${isNarrow ? 'last' : 'last req '} ${fmtSpeed(m.speed)}`}</Text> : null}
-          {ctxMeter ? meterRow('context', ctxMeter, layout, C.main, ctxNote) : null}
         </Box>
       )
     }
+    // The context: one line the pane's whole width, no box; its bar is sized by its own detail and note.
+    const ctxLine = (w: number) =>
+      ctxMeter ? meterRow('context', ctxMeter, { labelW: cells(ctxMeter.label), barW: lineMeterWidth(w, cells(ctxMeter.label), ctxMeter.detail + ctxNote) }, C.main, ctxNote) : null
 
     // ---- architect
     const lastConsult = a.consults[a.consults.length - 1]
@@ -1451,7 +1439,7 @@ export const register: Register = (on, options) => {
       if (!gs) return null
       const { paths, hidden } = pathLines(gs, v.gitOpen ? GIT_PATH_ROWS : 0)
       const unreviewedColor = gs.unreviewed === undefined ? C.amber : gs.unreviewed === 0 ? C.gate : C.warn
-      const title = <Text color={C.branch} bold wrap="truncate">{`branch · ${gs.branch}`}</Text>
+      const title = <Text color={C.branch} bold wrap="truncate">{`🔀 ${gs.branch}`}</Text>
       const changedColor = gs.changed > 0 ? C.text : C.dim
       // Two to a row, the sync and each count have a row of their own; alone, the sync sits beside the title.
       const head = isNarrow ? (
@@ -1511,11 +1499,11 @@ export const register: Register = (on, options) => {
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    // The main box: its frame, title and effort line, then a row per usage window, the context and the
-    // speed line. The Codex box: its frame and title, a row per window, and its note. The gap above the
-    // log is a row. Two boxes to a row take the taller one's rows, not both: the branch box then has the
+    // The main box: its frame, title and effort line, then a row per usage window; the context is a line
+    // under it (or under the Codex box). The Codex box: its frame and title, a row per window, and its
+    // note. The gap above the log is a row. Two boxes to a row take the taller one's rows, not both: the branch box then has the
     // sync and each count on a row, and the gate box wraps its summary and its buttons.
-    const mainRows = 4 + mainMeters.length + (m.speed ? 1 : 0)
+    const mainRows = 4 + usageMeters.length
     const codexRows = cx ? 3 + codexMeters.length + (cx.note ? 1 : 0) : 0
     const gitRows = gs ? 4 + (canUnfold(gs) ? 1 : 0) + pathRows(gs, v.gitOpen) : 0
     const gateRows = 6 + (v.gateOpen ? 5 : 0)
@@ -1528,7 +1516,7 @@ export const register: Register = (on, options) => {
       (v.gateOpen ? 5 : 0)
     const mainBlock = isPaired('main', 'codex') ? Math.max(mainRows, codexRows) : mainRows + codexRows
     const gitBlock = isPaired('git', 'gate') ? Math.max(gitRows + 2, gateWrapped) : gitRows + gateRows
-    const used = 2 + (banner ? 1 : 0) + mainBlock + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + (banner ? 1 : 0) + mainBlock + (ctxMeter ? 1 : 0) + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1577,9 +1565,10 @@ export const register: Register = (on, options) => {
 
     // Panels with the flow between them; the agents panel draws its own rails. A pair has no rail above
     // it: two boxes side by side, stretched to the taller one's height.
-    const column = (ps: readonly PairRow[], w: number) => (
+    const column = (ps: readonly ColumnRow[], w: number) => (
       <Box flexDirection="column" width={w}>
         {ps.map((p, i) => {
+          if (p === 'ctx') return ctxLine(w)
           if (typeof p !== 'string') {
             const [leftW, rightW] = pairWidths(w) ?? [w, w]
             return (
@@ -1646,7 +1635,7 @@ export const register: Register = (on, options) => {
       const vitals = [
         fableWindow ? windowShort(fb?.isStale ? 'Fable~' : 'Fable', fableWindow, now) : null,
         cx ? `Codex ${windowShort('5h', cx.fiveHour, now)} · ${windowShort('weekly', cx.weekly, now)}` : null,
-        gs ? `⎇ ${gs.branch} ${unreviewedLabel(gs)} · ${changedLabel(gs)}` : null,
+        gs ? `🔀 ${gs.branch} ${unreviewedLabel(gs)} · ${changedLabel(gs)}` : null,
       ].filter(Boolean)
       const live = [...cards.filter(c => c.status === 'running'), ...cards.filter(c => c.status !== 'running').reverse()].slice(0, Math.max(1, 3 - (vitals.length > 0 ? 1 : 0) - (banner ? 1 : 0)))
       const counts = ` ${s.rule} allowed · ${s.cleared} ${decider}${s.ask > 0 ? ` · ${s.ask} pending` : ''} · ${s.deny} denied`
@@ -1728,7 +1717,7 @@ export const register: Register = (on, options) => {
     const body = isWide ? (
       <Box flexDirection="column">
         <Box columnGap={2}>
-          {column(panels.filter(p => p === 'main' || p === 'codex' || p === 'architect' || p === 'gate'), colW)}
+          {column(withContext(panels.filter(p => p === 'main' || p === 'codex' || p === 'architect' || p === 'gate')), colW)}
           {column(panels.filter(p => p === 'git' || p === 'agents' || p === 'loops' || p === 'receipt'), colW)}
         </Box>
         {panels.includes('log') ? logPanel(W) : null}
