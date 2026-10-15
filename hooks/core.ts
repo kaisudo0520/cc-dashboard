@@ -162,6 +162,16 @@ export const DOCK_MIN_COLUMNS = 40
 export const dockColumns = (terminalColumns: number, percent: number) =>
   Math.max(DOCK_MIN_COLUMNS, Math.round((terminalColumns * percent) / 100) - DOCK_FRAME_COLUMNS)
 
+/** The cell the engine draws beside a docked pane's body, for the person to drag it by. */
+const DOCK_GRIP_COLUMNS = 1
+
+/**
+ * The terminal's width from a docked drawing: on the terminal `viewport.columns` is the transcript's
+ * columns only, so the dock (its body and its grip) is added back.
+ */
+export const terminalWidth = (viewportColumns: number, bodyColumns: number) =>
+  viewportColumns + bodyColumns + DOCK_GRIP_COLUMNS
+
 // ---------------------------------------------------------------- palette
 
 export type Palette = 'theme' | 'pastel'
@@ -680,7 +690,7 @@ export const endCard = (c: AgentCard, ok: boolean, at: number): AgentCard =>
  * in the background. Answers the ids it ended, with how.
  */
 export const stopCodex = (cards: AgentCard[], liveIds: readonly string[] | undefined): { id: string; ok: boolean }[] =>
-  cards.flatMap(c => {
+  cards.flatMap((c): { id: string; ok: boolean }[] => {
     if (c.codex === undefined || c.status !== 'running') return []
     if (c.codex.taskId === undefined) return [{ id: c.id, ok: false }]
     return liveIds !== undefined && !liveIds.includes(c.codex.taskId) ? [{ id: c.id, ok: true }] : []

@@ -1,3 +1,4 @@
+declare function setTimeout(callback: (value: unknown) => void, ms: number): unknown
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
@@ -79,6 +80,9 @@ type World = {
   writes: { path: string; text: string }[]
 }
 
+// On Windows the engine resolves a drive-less path like /home/me to C:\home\me before the fs hooks see it;
+// the fakes below are keyed by POSIX paths, so compare on the normalised form.
+const norm = (p: string) => p.replace(/^[A-Za-z]:/, '').replaceAll('\\', '/')
 const engine = (on: On, world: Partial<World> = {}) => {
   const w: World = {
     home: HOME,
@@ -107,7 +111,7 @@ const engine = (on: On, world: Partial<World> = {}) => {
     value: w.shown ? [{ id: 'dashboard', title: 'Dashboard', isShown: true, isFocused: false, isPlaced: true }] : [],
   }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'dashboard' } }))
   on('session.usage', () => ({ deny: 'no usage here' }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
@@ -126,18 +130,18 @@ const engine = (on: On, world: Partial<World> = {}) => {
     return { value: { status: w.fetchOk ? 200 : 500, ok: w.fetchOk, headers: {}, text: w.fetchBody } }
   })
   on('fs.write', (_$, e) => {
-    w.writes.push({ path: e.path, text: e.text })
-    w.files[e.path] = e.text
+    w.writes.push({ path: norm(e.path), text: e.text })
+    w.files[norm(e.path)] = e.text
     return { value: undefined }
   })
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('env.get', (_$, e) => ({ value: e.name === 'USERPROFILE' ? w.home : e.name === 'SystemRoot' ? w.systemRoot : undefined }))
   on('fs.list', (_$, e) => {
-    const names = DIRS[e.path] ?? w.dirs[e.path]
+    const names = DIRS[norm(e.path)] ?? w.dirs[norm(e.path)]
     return names === undefined ? { deny: `no such directory: ${e.path}` } : { value: names.map(n => ({ ...n, size: 100, mtimeMs: 0, isLink: false })) }
   })
   on('fs.read', (_$, e) => {
-    const file = w.files[e.path.replaceAll('\\', '/')]
+    const file = w.files[norm(e.path)]
     return file === undefined ? { deny: `no such file: ${e.path}` } : { value: file }
   })
   on('fs.stat', (_$, e) => ({ value: { kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false, ...(e.resolve ? { realPath: e.path } : {}) } }))

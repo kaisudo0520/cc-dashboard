@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { claudeWindows, dockColumns, limitOf, parseConfig } from '../hooks/core'
+import { claudeWindows, dockColumns, limitOf, parseConfig, terminalWidth } from '../hooks/core'
 
 // The side dock: in the fullscreen layout the pane sits beside the transcript, asking for a share
 // of the terminal's width (50% unless /config says otherwise), and follows the terminal as it is
@@ -38,18 +38,25 @@ const open = ($: Engine, columns: number) =>
 
 type Seat = { placement?: 'dock' | 'inline'; isFullscreen?: boolean; surface?: 'terminal' | 'desktop'; bodyColumns?: number }
 
+// The grip beside a docked pane: the engine draws the dock as the requested body columns plus this.
+const ENGINE_DOCK_GRIP = 1
+
+// A pane drawn as the engine draws it. Docked on the terminal, `viewport.columns` is the transcript's
+// columns, the terminal less the dock, not the terminal itself. Inline it is the terminal's width.
 const dock = (terminalColumns: number, seat: Seat = {}) => {
   const placement = seat.placement ?? 'dock'
+  const bodyColumns = seat.bodyColumns ?? (placement === 'dock' ? dockColumns(terminalColumns, 50) : terminalColumns)
+  const viewportColumns = placement === 'dock' ? terminalColumns - (bodyColumns + ENGINE_DOCK_GRIP) : terminalColumns
   return {
     plugin: 'cc-dashboard',
     component: 'Pane' as const,
     requestId: 'dashboard',
     surface: seat.surface ?? ('terminal' as const),
-    viewport: { columns: terminalColumns, rows: 50, isFullscreen: seat.isFullscreen ?? placement === 'dock' },
+    viewport: { columns: viewportColumns, rows: 50, isFullscreen: seat.isFullscreen ?? placement === 'dock' },
     props: {
       title: 'Dashboard',
       isFocused: false,
-      bodyColumns: seat.bodyColumns ?? (placement === 'dock' ? dockColumns(terminalColumns, 50) : terminalColumns),
+      bodyColumns,
       placement,
       scroll: { offset: 0, bodyRows: 48 },
       view: {},
@@ -71,6 +78,16 @@ test('the dock asks for its share of the terminal, less the frame, and never und
   expect(dockColumns(110, 40)).toBe(42)
   expect(dockColumns(80, 40)).toBe(40)
   expect(dockColumns(200, 50)).toBe(98)
+})
+
+test("the terminal's width is the transcript's columns plus the dock's body and grip", () => {
+  expect(terminalWidth(101, 98)).toBe(200)
+  expect(terminalWidth(76, 73)).toBe(150)
+  // A pane at its share round-trips: the width it was asked for from comes back out of its drawing.
+  for (const width of [110, 150, 200, 301]) {
+    const body = dockColumns(width, 50)
+    expect(dockColumns(terminalWidth(width - (body + ENGINE_DOCK_GRIP), body), 50)).toBe(body)
+  }
 })
 
 test('the dock share is read leniently: 50 by default, kept between 20 and 80', () => {
@@ -120,7 +137,8 @@ test('a docked pane follows the terminal when it is resized, and asks once per w
   w.shown = true
   const before = w.opens.length
 
-  const narrower = await $.ui.mount(dock(150))
+  // The dock keeps the 98 it was asked for until the pump asks again.
+  const narrower = await $.ui.mount(dock(150, { bodyColumns: 98 }))
   await narrower.unmount()
   await settle(clock)
   expect(w.opens.length).toBe(before + 1)
@@ -169,6 +187,42 @@ test('a dock the person dragged to another width is not pulled back', async ($, 
   await dragged.unmount()
   await settle(clock)
   expect(w.opens.length).toBe(before)
+})
+
+test("a pane already docked at its share is left alone: the terminal's width is the transcript's columns plus the dock", async ($, on) => {
+  const { w, clock } = engine(on)
+  await $.session.start({ cwd: '/work' } as never)
+  await open($, 200)
+  w.shown = true
+  const before = w.opens.length
+  const asked = w.opens.at(-1)?.columns
+  expect(asked).toBe(dockColumns(200, 50))
+
+  // As the engine draws it: the transcript keeps 200 less the dock, the body is what was asked for.
+  const ui = await $.ui.mount(dock(200, { bodyColumns: asked }))
+  await ui.unmount()
+  await settle(clock)
+  expect(w.opens.length).toBe(before)
+})
+
+test('a dock the engine redraws after each ask settles on its share instead of drifting', async ($, on) => {
+  const { w, clock } = engine(on)
+  await $.session.start({ cwd: '/work' } as never)
+  w.shown = true
+  const before = w.opens.length
+
+  // The pane starts at some other width (the engine's own share); every re-open changes the dock,
+  // and the next drawing reflects it.
+  let body = 64
+  for (let tick = 0; tick < 5; tick++) {
+    const ui = await $.ui.mount(dock(200, { bodyColumns: body }))
+    await ui.unmount()
+    await settle(clock)
+    body = w.opens.at(-1)?.columns ?? body
+  }
+
+  const asks = w.opens.slice(before).map(o => o.columns)
+  expect(asks).toEqual([dockColumns(200, 50)])
 })
 
 // ---------------------------------------------------------------- inline summary

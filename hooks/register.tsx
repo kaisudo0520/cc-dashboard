@@ -35,6 +35,7 @@ import {
   claudeWindows,
   DOCK_MIN_COLUMNS,
   dockColumns,
+  terminalWidth,
   GIT_PATH_ROWS,
   unreviewedLabel,
   changedLabel,
@@ -225,8 +226,9 @@ async function isArchitectType($: EngineInterface, cfg: Config, type: string) {
 }
 
 // The dock's width is a share of the terminal's, and the terminal's width is known only from a
-// drawing's viewport or a command's presentation. A drawing may not act, so it notes the width here
-// and the pump asks the dock again (see syncDock). What a person dragged the dock to still wins.
+// drawing or a command's presentation. A docked drawing gives the transcript's columns, so the
+// dock's body and grip are added back. A drawing may not act, so it notes the width here and the
+// pump asks the dock again (see syncDock). What a person dragged the dock to still wins.
 let terminalColumns: number | undefined
 let lastPlacement: 'dock' | 'inline' | undefined
 let requestedColumns: number | undefined
@@ -967,7 +969,10 @@ export const register: Register = (on, options) => {
     // drawing counts; a desktop or phone attached to the session measures a pane of its own.
     if (e.surface === 'terminal') {
       lastPlacement = e.props.placement
-      if (e.viewport?.isFullscreen === true) terminalColumns = e.viewport.columns
+      // Docked, the viewport is the transcript beside the dock, so the dock is added back.
+      if (e.viewport?.isFullscreen === true) {
+        terminalColumns = e.props.placement === 'dock' ? terminalWidth(e.viewport.columns, e.props.bodyColumns) : e.viewport.columns
+      }
     }
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
