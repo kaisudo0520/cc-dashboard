@@ -467,7 +467,7 @@ test('each rate-limit window has a row of its own with the time to its reset; th
     const lines = drawnLines((await ui.drawn()) as Drawn)
     await ui.unmount()
     const at = (re: RegExp) => lines.findIndex(l => re.test(l))
-    return { lines, five: at(/^5h +━+─* +19% ⏱ 3h10m$/), week: at(/^7d +━*─+ +3% ⏱ 4d2h$/), context: at(/^ctx +━+─+ +58% 116k\/200k( +⟲1)?$/) }
+    return { lines, five: at(/^5h +━+─* +19% ⏱  3h10m$/), week: at(/^7d +━*─+ +3% ⏱  4d2h$/), context: at(/^ctx +━+─+ +58% 116k\/200k( +⟲1)?$/) }
   }
   // At 120 columns the pane is wide and the main box takes half of it.
   const panelOf = (cols: number) => (cols >= 110 ? Math.floor((cols - 2) / 2) : cols)

@@ -201,7 +201,7 @@ test('a usage window shows percent used; past its reset it has restarted at 0%, 
 })
 
 test('a usage window as a row: the time to its reset, stale once past it, a dash before any reading', () => {
-  expect(windowMeter('5h', { usedPercent: 13.4, resetsAtMs: NOW + 2 * HOUR_MS + 10 * 60_000 }, NOW)).toEqual({ label: '5h', pct: 13, isStale: false, detail: '⏱ 2h10m' })
+  expect(windowMeter('5h', { usedPercent: 13.4, resetsAtMs: NOW + 2 * HOUR_MS + 10 * 60_000 }, NOW)).toEqual({ label: '5h', pct: 13, isStale: false, detail: '⏱  2h10m' })
   expect(windowMeter('weekly', { usedPercent: 40, resetsAtMs: NOW - 1 }, NOW)).toEqual({ label: 'weekly', pct: 0, isStale: true, detail: 'stale' })
   expect(windowMeter('weekly', { usedPercent: 40 }, NOW)).toEqual({ label: 'weekly', pct: 40, isStale: false, detail: '' })
   expect(windowMeter('weekly', undefined, NOW)).toEqual({ label: 'weekly', pct: null, isStale: false, detail: '' })
@@ -212,8 +212,8 @@ test('a usage window as a row: the time to its reset, stale once past it, a dash
 test('usage rows line up: the percent right-aligned, one bar width for the whole panel', () => {
   expect([meterPercent({ label: '', pct: 7, isStale: false, detail: '' }), meterPercent({ label: '', pct: 58, isStale: true, detail: '' }), meterPercent({ label: '', pct: 100, isStale: true, detail: '' })]).toEqual(['   7%', ' ~58%', '~100%'])
   // 40 columns: 36 inside the frame, less a 5-cell label, three spaces, the percent and a 9-cell detail.
-  expect(meterWidth(40, 5, ['⏱ 3h10m', '⏱ 4d2h', ''])).toBe(14)
-  expect(meterWidth(40, 5, ['⏱ 3h10m', '116k/200k  ⟲2'])).toBe(10) // the widest detail sets every row's bar
+  expect(meterWidth(40, 5, ['⏱  3h10m', '⏱  4d2h', '⏱  10d23h', ''])).toBe(14)
+  expect(meterWidth(40, 5, ['⏱  3h10m', '116k/200k  ⟲2'])).toBe(10) // the widest detail sets every row's bar
   expect(meterWidth(20, 5, [])).toBe(4) // never under four cells
   expect(meterWidth(200, 5, [''])).toBe(40) // never over forty
   expect(padCells('7d', 5)).toBe('7d   ')
@@ -265,8 +265,8 @@ test('the Codex panel shows its model, effort and both windows from the newest r
   for (const cols of [64, 120]) {
     const ui = await $.ui.mount(props(cols))
     expect(await ui.find({ text: 'Codex · gpt-6-sol · high' })).toBeDefined()
-    expect(await ui.find({ text: /13% ⏱ 2h10m/ })).toBeDefined()
-    expect(await ui.find({ text: /40% ⏱ 4d2h/ })).toBeDefined()
+    expect(await ui.find({ text: /13% ⏱  2h10m/ })).toBeDefined()
+    expect(await ui.find({ text: /40% ⏱  4d2h/ })).toBeDefined()
     expect(await ui.find({ text: /^ Codex$/ })).toBeDefined()
     await ui.unmount()
   }
@@ -404,7 +404,7 @@ test('Fable weekly usage shows in the main box, read through the engine\'s own a
   await showAndPump($, w, clock)
   expect(w.fetchCalls).toBe(1)
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: /12% ⏱ 2d2h/ })).toBeDefined()
+  expect(await ui.find({ text: /12% ⏱  2d2h/ })).toBeDefined()
   expect(await ui.find({ text: 'Fable ' })).toBeDefined()
   await ui.unmount()
 })

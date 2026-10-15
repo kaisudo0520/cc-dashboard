@@ -150,7 +150,7 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
 
 // ---------------------------------------------------------------- dock
 
-const DOCK_PERCENT = 50
+const DOCK_PERCENT = 40
 const DOCK_PERCENT_MIN = 20
 const DOCK_PERCENT_MAX = 80
 /** The cells the dock's frame takes beside its body: the divider and the edge. */
@@ -602,7 +602,7 @@ const METER_MIN = 4
 const METER_MAX = 40
 /** The percent column, right-aligned after a space: `100%`, or `~100%` past its reset. */
 const METER_PCT_W = 5
-/** The detail column: `⏱ 10d23h`, `stale`, or the context's `116k/200k`. */
+/** The detail column: `⏱  10d23h` (two spaces after the clock), `stale`, or the context's `116k/200k`. */
 const METER_DETAIL_W = 9
 
 /** One usage row as the pane draws it: `pct` null is a window not read yet. */
@@ -612,7 +612,7 @@ export type Meter = { label: string; pct: number | null; isStale: boolean; detai
 export const windowMeter = (label: string, w: UsageWindow | undefined, now: number): Meter => {
   const v = windowView(w, now)
   if (v === null) return { label, pct: null, isStale: false, detail: '' }
-  return { label, pct: v.pct, isStale: v.isStale, detail: v.isStale ? 'stale' : v.resetIn ? `⏱ ${v.resetIn}` : '' }
+  return { label, pct: v.pct, isStale: v.isStale, detail: v.isStale ? 'stale' : v.resetIn ? `⏱  ${v.resetIn}` : '' }
 }
 
 /** `  58%`, ` ~58%` past its reset: right-aligned in the percent column. */

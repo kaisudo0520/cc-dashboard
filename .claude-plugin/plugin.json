@@ -58,7 +58,7 @@
       "title": "側欄寬度",
       "description": "全螢幕（/tui fullscreen）時停靠在右側的面板占終端寬度的百分比（20-80），隨視窗縮放調整；手動拖過的寬度優先",
       "type": "number",
-      "default": 50
+      "default": 40
     },
     "maxCards": {
       "title": "卡片上限",

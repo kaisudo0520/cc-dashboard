@@ -5,11 +5,13 @@ import { expect, mock, test } from 'claude-code/testing'
 import { claudeWindows, dockColumns, limitOf, parseConfig, terminalWidth } from '../hooks/core'
 
 // The side dock: in the fullscreen layout the pane sits beside the transcript, asking for a share
-// of the terminal's width (50% unless /config says otherwise), and follows the terminal as it is
+// of the terminal's width (40% unless /config says otherwise), and follows the terminal as it is
 // resized. Inline above the prompt, the summary carries Claude's own 5-hour and 7-day windows.
 
 const NOW = new Date(2026, 9, 15, 13, 0, 0).getTime()
 const HOUR_MS = 3_600_000
+// The share of the terminal the dock asks for when /config says nothing.
+const DEFAULT_PERCENT = 40
 
 type Opened = { id: string; columns?: number; rows?: number }
 
@@ -45,7 +47,7 @@ const ENGINE_DOCK_GRIP = 1
 // columns, the terminal less the dock, not the terminal itself. Inline it is the terminal's width.
 const dock = (terminalColumns: number, seat: Seat = {}) => {
   const placement = seat.placement ?? 'dock'
-  const bodyColumns = seat.bodyColumns ?? (placement === 'dock' ? dockColumns(terminalColumns, 50) : terminalColumns)
+  const bodyColumns = seat.bodyColumns ?? (placement === 'dock' ? dockColumns(terminalColumns, DEFAULT_PERCENT) : terminalColumns)
   const viewportColumns = placement === 'dock' ? terminalColumns - (bodyColumns + ENGINE_DOCK_GRIP) : terminalColumns
   return {
     plugin: 'cc-dashboard',
@@ -90,12 +92,12 @@ test("the terminal's width is the transcript's columns plus the dock's body and 
   }
 })
 
-test('the dock share is read leniently: 50 by default, kept between 20 and 80', () => {
-  expect(parseConfig({}).dockPercent).toBe(50)
+test('the dock share is read leniently: 40 by default, kept between 20 and 80', () => {
+  expect(parseConfig({}).dockPercent).toBe(DEFAULT_PERCENT)
   expect(parseConfig({ dockPercent: 55 }).dockPercent).toBe(55)
   expect(parseConfig({ dockPercent: 95 }).dockPercent).toBe(80)
   expect(parseConfig({ dockPercent: 5 }).dockPercent).toBe(20)
-  expect(parseConfig({ dockPercent: 'wide' }).dockPercent).toBe(50)
+  expect(parseConfig({ dockPercent: 'wide' }).dockPercent).toBe(DEFAULT_PERCENT)
 })
 
 test("Claude's windows read short by kind: 5h then 7d, marked past their reset, absent when unknown", () => {
@@ -118,16 +120,16 @@ test('before any width is known, the pane opens at the engine share and asks for
   expect(w.opens).toEqual([{ id: 'dashboard', columns: undefined, rows: 8 }])
 })
 
-test('/dashboard in a 200-column fullscreen terminal asks the dock for half of it', async ($, on) => {
+test('/dashboard in a 200-column fullscreen terminal asks the dock for its default share of it', async ($, on) => {
   const { w } = engine(on)
   await open($, 200)
-  expect(w.opens.at(-1)).toEqual({ id: 'dashboard', columns: 98, rows: 8 })
+  expect(w.opens.at(-1)).toEqual({ id: 'dashboard', columns: 78, rows: 8 })
 })
 
-test('the share comes from /config', { options: { dockPercent: 40 } }, async ($, on) => {
+test('the share comes from /config', { options: { dockPercent: 50 } }, async ($, on) => {
   const { w } = engine(on)
   await open($, 200)
-  expect(w.opens.at(-1)?.columns).toBe(78)
+  expect(w.opens.at(-1)?.columns).toBe(98)
 })
 
 test('a docked pane follows the terminal when it is resized, and asks once per width', async ($, on) => {
@@ -137,12 +139,12 @@ test('a docked pane follows the terminal when it is resized, and asks once per w
   w.shown = true
   const before = w.opens.length
 
-  // The dock keeps the 98 it was asked for until the pump asks again.
-  const narrower = await $.ui.mount(dock(150, { bodyColumns: 98 }))
+  // The dock keeps the 78 it was asked for until the pump asks again.
+  const narrower = await $.ui.mount(dock(150, { bodyColumns: 78 }))
   await narrower.unmount()
   await settle(clock)
   expect(w.opens.length).toBe(before + 1)
-  expect(w.opens.at(-1)?.columns).toBe(73)
+  expect(w.opens.at(-1)?.columns).toBe(58)
 
   const same = await $.ui.mount(dock(150))
   await same.unmount()
@@ -196,7 +198,7 @@ test("a pane already docked at its share is left alone: the terminal's width is 
   w.shown = true
   const before = w.opens.length
   const asked = w.opens.at(-1)?.columns
-  expect(asked).toBe(dockColumns(200, 50))
+  expect(asked).toBe(dockColumns(200, DEFAULT_PERCENT))
 
   // As the engine draws it: the transcript keeps 200 less the dock, the body is what was asked for.
   const ui = await $.ui.mount(dock(200, { bodyColumns: asked }))
@@ -222,7 +224,7 @@ test('a dock the engine redraws after each ask settles on its share instead of d
   }
 
   const asks = w.opens.slice(before).map(o => o.columns)
-  expect(asks).toEqual([dockColumns(200, 50)])
+  expect(asks).toEqual([dockColumns(200, DEFAULT_PERCENT)])
 })
 
 // ---------------------------------------------------------------- inline summary

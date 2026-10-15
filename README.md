@@ -23,7 +23,7 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 
 ## 側欄（全螢幕）
 
-`/tui fullscreen`（或 `settings.json` 的 `"tui": "fullscreen"`，下次啟動生效）後，面板停靠在 transcript 右側，寬度為終端的 `dockPercent`%（預設 50%，扣掉邊框，最窄 40 欄），視窗縮放後約 2 秒內跟著調整。終端寬度只在終端機的面板繪製或執行 `/dashboard` 時讀得到，所以剛啟動時先用引擎預設寬度，第一次繪製後才換成比例寬度；附掛的 Desktop／手機畫面不影響。手動拖過的寬度優先（引擎規則）。全螢幕版面 110 欄起才停靠；session 開始時自動開啟（沒人要求）則要 144 欄，窄一點時用 `/dashboard` 開。
+`/tui fullscreen`（或 `settings.json` 的 `"tui": "fullscreen"`，下次啟動生效）後，面板停靠在 transcript 右側，寬度為終端的 `dockPercent`%（預設 40%，扣掉邊框，最窄 40 欄），視窗縮放後約 2 秒內跟著調整。終端寬度只在終端機的面板繪製或執行 `/dashboard` 時讀得到，所以剛啟動時先用引擎預設寬度，第一次繪製後才換成比例寬度；附掛的 Desktop／手機畫面不影響。手動拖過的寬度優先（引擎規則）。全螢幕版面 110 欄起才停靠；session 開始時自動開啟（沒人要求）則要 144 欄，窄一點時用 `/dashboard` 開。
 
 ## 使用
 
@@ -96,7 +96,7 @@ Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每
 | `gateLabel` | `GATE` | 權限面板的名稱 |
 | `panels` | `main,codex,git,architect,gate,agents,loops,receipt,log` | 顯示哪些面板、依序 |
 | `layout` | `auto` | `mini`、`compact`、`wide` 或 `auto` |
-| `dockPercent` | `50` | 全螢幕時側欄占終端寬度的百分比（20–80） |
+| `dockPercent` | `40` | 全螢幕時側欄占終端寬度的百分比（20–80） |
 | `maxCards` | `3` | 並排卡片數上限（1–6） |
 | `motion` | `while-active` | `off` 讓連接線靜止 |
 | `moments` | `true` | 顯示推測的諮詢時機 |
