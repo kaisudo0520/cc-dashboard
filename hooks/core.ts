@@ -176,7 +176,7 @@ export const terminalWidth = (viewportColumns: number, bodyColumns: number) =>
 // ---------------------------------------------------------------- palette
 
 export type Palette = 'theme' | 'pastel'
-export type Colors = Record<'main' | 'agent' | 'gate' | 'cleared' | 'arch' | 'codex' | 'branch' | 'amber' | 'warn' | 'dim' | 'faint' | 'text', string>
+export type Colors = Record<'main' | 'agent' | 'gate' | 'cleared' | 'arch' | 'codex' | 'branch' | 'ok' | 'amber' | 'warn' | 'dim' | 'faint' | 'text', string>
 
 /**
  * `theme` names the person's own theme colours (they follow light, dark and colour-blind themes);
@@ -191,6 +191,7 @@ export const PALETTES: Record<Palette, Colors> = {
     arch: 'merged',
     codex: 'planMode',
     branch: 'promptBorder',
+    ok: 'success',
     amber: 'warning',
     warn: 'error',
     dim: 'inactive',
@@ -205,6 +206,7 @@ export const PALETTES: Record<Palette, Colors> = {
     arch: '#c4b5fd',
     codex: '#fdba74',
     branch: '#d0d7de',
+    ok: '#86efac',
     amber: '#fcd34d',
     warn: '#fca5a5',
     dim: '#6b7280',
@@ -270,6 +272,12 @@ export const gauge = (pct: number, width: number, [filled, empty]: readonly [str
 
 /** The usage rows' glyphs, as the first version drew its quota bars: ━ used, ─ the rest. */
 export const LINE_GLYPHS = ['━', '─'] as const
+
+/** The context bar's glyphs, as the first version drew it: █ used, ░ the rest. Swap them here. */
+export const BLOCK_GLYPHS = ['█', '░'] as const
+
+/** The colour of the context bar and its percent: green under 50, yellow from 50, red from 80. */
+export const ctxTone = (pct: number): 'ok' | 'amber' | 'warn' => (pct >= 80 ? 'warn' : pct >= 50 ? 'amber' : 'ok')
 
 /** A rate-limit reading as the pane keeps it, its ISO reset time turned into ms since the epoch. */
 export const limitOf = (r: { kind: string; percentUsed: number; resetsAt?: string }) => {
@@ -623,11 +631,14 @@ export const meterWidth = (panelW: number, labelW: number, details: readonly str
 
 /**
  * The bar of a line drawn without a box, alone in its row (the context): whatever the label, the
- * percent, its own detail and its note leave of the whole `lineW`, with no upper cap, so the line spans
- * the pane. The detail has a space before it only when there is one; the note follows as written.
+ * percent, its own detail and its note leave of `lineW`, with no upper cap. The detail has a space
+ * before it only when there is one; the note follows as written.
  */
 export const lineMeterWidth = (lineW: number, labelW: number, detail: string, note = '') =>
   Math.max(METER_MIN, lineW - labelW - METER_PCT_W - 2 - (detail ? 1 + cells(detail) : 0) - cells(note))
+
+/** The share of the pane the context line takes. */
+export const CTX_LINE_SHARE = 0.5
 
 /** `s` padded with spaces to `width` cells, a wide character counting two. */
 export const padCells = (s: string, width: number) => s + ' '.repeat(Math.max(0, width - cells(s)))

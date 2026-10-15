@@ -33,6 +33,9 @@ import {
   lineMeterWidth,
   padCells,
   LINE_GLYPHS,
+  BLOCK_GLYPHS,
+  CTX_LINE_SHARE,
+  ctxTone,
   limitWindow,
   claudeWindows,
   DOCK_MIN_COLUMNS,
@@ -1020,7 +1023,7 @@ export const register: Register = (on, options) => {
     // The context is a line of its own under the main box (under the Codex box when that comes next), once it is read.
     const ctxMeter: Meter | null =
       u.pct !== null
-        ? { label: 'ctx', pct: Math.round(u.pct), isStale: false, detail: u.tokens !== null ? `${kTokens(u.tokens)}/${kTokens(u.window)}` : '' }
+        ? { label: 'Context', pct: Math.round(u.pct), isStale: false, detail: u.tokens !== null ? `${kTokens(u.tokens)}/${kTokens(u.window)}` : '' }
         : null
     const ctxNote = u.compactions > 0 ? `  ⟲${u.compactions}` : ''
     const withContext = (list: readonly PairRow[]): ColumnRow[] => (ctxMeter ? withCtx(list) : [...list])
@@ -1053,10 +1056,10 @@ export const register: Register = (on, options) => {
       )
 
     // A usage row as the first version drew its quota header: the label, a bar across the line, the
-    // percent in a column of its own, then the time to the reset (or the context's tokens). The rows
+    // percent in a column of its own, then the time to the reset. The rows
     // of one panel share a label column and a bar width (see meterLayout), so their bars line up.
     // Past its reset a window reads 0%, marked `~` and `stale`; a window not read yet is a dash.
-    const meterRow = (key: string, row: Meter, layout: { labelW: number; barW: number }, color: string, note = '') => {
+    const meterRow = (key: string, row: Meter, layout: { labelW: number; barW: number }, color: string) => {
       const label = padCells(row.label, layout.labelW)
       if (row.pct === null) return <Text key={key} dimColor wrap="truncate">{`${label} —`}</Text>
       const bar = gauge(row.pct, layout.barW, LINE_GLYPHS)
@@ -1068,7 +1071,6 @@ export const register: Register = (on, options) => {
           <Text color={C.faint}>{bar.off}</Text>
           <Text color={tone} bold={!row.isStale}>{` ${meterPercent(row)}`}</Text>
           {row.detail ? <Text dimColor>{` ${row.detail}`}</Text> : null}
-          {note ? <Text color={C.amber}>{note}</Text> : null}
         </Text>
       )
     }
@@ -1120,9 +1122,26 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    // The context: one line the pane's whole width, no box; its bar is sized by its own detail and note.
-    const ctxLine = (w: number) =>
-      ctxMeter ? meterRow('context', ctxMeter, { labelW: cells(ctxMeter.label), barW: lineMeterWidth(w, cells(ctxMeter.label), ctxMeter.detail, ctxNote) }, C.main, ctxNote) : null
+    // The context: one line about half the pane wide, no box, left-aligned in its column with a blank row below; its bar
+    // is sized by its own detail and note, and the filled cells and the percent share one colour by how full it is.
+    const ctxLine = (w: number) => {
+      if (!ctxMeter || ctxMeter.pct === null) return null
+      const barW = lineMeterWidth(Math.round(w * CTX_LINE_SHARE), cells(ctxMeter.label), ctxMeter.detail, ctxNote)
+      const bar = gauge(ctxMeter.pct, barW, BLOCK_GLYPHS)
+      const tone = C[ctxTone(ctxMeter.pct)]
+      return (
+        <Box key="context" width={w} marginBottom={1}>
+          <Text wrap="truncate">
+            <Text dimColor>{`${ctxMeter.label} `}</Text>
+            <Text color={tone}>{bar.on}</Text>
+            <Text color={C.faint}>{bar.off}</Text>
+            <Text color={tone} bold>{` ${meterPercent(ctxMeter)}`}</Text>
+            {ctxMeter.detail ? <Text dimColor>{` ${ctxMeter.detail}`}</Text> : null}
+            {ctxNote ? <Text color={C.amber}>{ctxNote}</Text> : null}
+          </Text>
+        </Box>
+      )
+    }
 
     // ---- architect
     const lastConsult = a.consults[a.consults.length - 1]
@@ -1501,8 +1520,8 @@ export const register: Register = (on, options) => {
 
     // ---- log: whatever rows the other panels leave, 4 to 8
     // The main box: its frame, title and effort line, then a row per usage window; the context is a line
-    // under it (or under the Codex box). The Codex box: its frame and title, a row per window, and its
-    // note. The gap above the log is a row. Two boxes to a row take the taller one's rows, not both: the branch box then has the
+    // under it (or under the Codex box) and a blank row below that. The Codex box: its frame and title,
+    // a row per window, and its note. The gap above the log is a row. Two boxes to a row take the taller one's rows, not both: the branch box then has the
     // sync and each count on a row, and the gate box wraps its summary and its buttons.
     const mainRows = 4 + usageMeters.length
     const codexRows = cx ? 3 + codexMeters.length + (cx.note ? 1 : 0) : 0
@@ -1517,7 +1536,7 @@ export const register: Register = (on, options) => {
       (v.gateOpen ? 5 : 0)
     const mainBlock = isPaired('main', 'codex') ? Math.max(mainRows, codexRows) : mainRows + codexRows
     const gitBlock = isPaired('git', 'gate') ? Math.max(gitRows + 2, gateWrapped) : gitRows + gateRows
-    const used = 2 + (banner ? 1 : 0) + mainBlock + (ctxMeter ? 1 : 0) + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + (banner ? 1 : 0) + mainBlock + (ctxMeter ? 2 : 0) + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)

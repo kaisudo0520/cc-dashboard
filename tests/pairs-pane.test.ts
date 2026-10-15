@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { cells } from '../hooks/core'
+import { PALETTES, cells } from '../hooks/core'
 
 // The single-column pane seats main|Codex and branch|gate side by side from 70 columns. A stand-in
 // engine answers the reads (as dashboard-extras does); the test kit hands back the tree, not its paint,
@@ -348,7 +348,7 @@ const measured = async ($: Engine) => {
 const compacted = async ($: Engine) => {
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never)
 }
-const CTX = /^ctx +[━─]+ +58% 116k\/200k {2}⟲1$/
+const CTX = /^Context +█+░+ +58% 116k\/200k {2}⟲1$/
 
 /** The Text nodes in drawing order, and whether each sits inside a round-bordered box. */
 const textLines = (n: unknown, inside = false): { text: string; inside: boolean }[] =>
@@ -372,49 +372,116 @@ for (const [columns, shape] of [[78, 'two to a row'], [64, 'stacked']] as const)
     const [weekly, ctx, branch] = [at(/^weekly /), at(CTX), at(/^🔀 main/)]
     expect([weekly >= 0, ctx > weekly, branch > ctx]).toEqual([true, true, true])
     expect(lines[ctx]?.inside).toBe(false) // not in the main box, nor in any
-    expect(lines.filter(l => l.inside).some(l => /^ctx /.test(l.text))).toBe(false)
+    expect(lines.filter(l => l.inside).some(l => /^Context /.test(l.text))).toBe(false)
   })
 }
 
-// The ctx bar takes what the label, percent and detail leave of the whole pane (no 40-cell cap): the line is W cells.
-test('the context line spans the whole pane, with the compaction note and without', async ($, on) => {
+// The context line takes half the pane: its bar is what the label, percent, detail and note leave of that half.
+// A narrow pane keeps the bar at four cells at least, so the line then runs past half: `extra` is the detail and note.
+const ctxWidth = (columns: number, extra: number) => Math.max(Math.round(columns / 2), 7 + 1 + 4 + 1 + 5 + extra)
+
+test('the context line takes half the pane, with the compaction note and without', async ($, on) => {
   engine(on)
   await dashboard($, 'refresh')
   await check($)
   await measured($)
   const widths = async (columns: number) => {
     const ui = await $.ui.mount(props(columns))
-    const text = textLines(await ui.drawn()).find(l => /^ctx /.test(l.text))?.text ?? ''
+    const text = textLines(await ui.drawn()).find(l => /^Context /.test(l.text))?.text ?? ''
     await ui.unmount()
     return cells(text)
   }
-  expect([await widths(78), await widths(64), await widths(100)]).toEqual([78, 64, 100])
+  expect([await widths(78), await widths(64), await widths(100)]).toEqual([39, 32, 50])
+  expect([await widths(40), await widths(30)]).toEqual([ctxWidth(40, 10), ctxWidth(30, 10)]) // the 4-cell floor: 28 and 28
   await compacted($)
-  expect([await widths(78), await widths(64), await widths(100)]).toEqual([78, 64, 100])
+  expect([await widths(78), await widths(64), await widths(100)]).toEqual([39, 32, 50])
+  expect([await widths(40), await widths(30)]).toEqual([ctxWidth(40, 14), ctxWidth(30, 14)])
 })
 
 // A context read with no token figure has no detail: the row leaves out its space, so the bar takes it.
-test('the context line spans the whole pane with no token figure, with the compaction note and without', async ($, on) => {
+test('the context line takes half the pane with no token figure, with the compaction note and without', async ($, on) => {
   engine(on)
   await dashboard($, 'refresh')
   await check($)
   await $.session.measure({ context: { window: 200_000, percent: 58 }, rateLimits: [], changed: ['context'] } as never)
   const widths = async (columns: number) => {
     const ui = await $.ui.mount(props(columns))
-    const text = textLines(await ui.drawn()).find(l => /^ctx /.test(l.text))?.text ?? ''
+    const text = textLines(await ui.drawn()).find(l => /^Context /.test(l.text))?.text ?? ''
     await ui.unmount()
     return { text, w: cells(text) }
   }
   const bare = await widths(78)
-  expect(bare.text).toMatch(/^ctx +[━─]+ +58%$/)
-  expect([bare.w, (await widths(64)).w, (await widths(100)).w]).toEqual([78, 64, 100])
+  expect(bare.text).toMatch(/^Context +█+░+ +58%$/)
+  expect([bare.w, (await widths(64)).w, (await widths(100)).w]).toEqual([39, 32, 50])
+  expect((await widths(20)).w).toBe(ctxWidth(40, 0)) // a pane is never under 40 columns: half is 20
   await compacted($)
-  expect((await widths(78)).text).toMatch(/^ctx +[━─]+ +58% {2}⟲1$/)
-  expect([(await widths(78)).w, (await widths(64)).w, (await widths(100)).w]).toEqual([78, 64, 100])
+  expect((await widths(78)).text).toMatch(/^Context +█+░+ +58% {2}⟲1$/)
+  expect([(await widths(78)).w, (await widths(64)).w, (await widths(100)).w]).toEqual([39, 32, 50])
 })
 
-// Wide: the context is still one line under the main block, in the left column, and as wide as that column.
-test('wide: the context line comes after the Codex box in the left column, as wide as the column', async ($, on) => {
+/** The pieces of the context line in drawing order: each child Text's string, colour and weight. */
+const ctxParts = (tree: unknown) => {
+  const line = within(tree, n => n.type === 'Text' && /^Context /.test(textOf(n)))[0]
+  return kids(line).map(k => ({ text: textOf(k), color: k.props?.color as string | undefined, bold: k.props?.bold === true, dim: k.props?.dimColor === true }))
+}
+
+// The whole filled bar and the percent take one colour by how full the context is: green under 50, yellow from 50 to 79,
+// red from 80; the track keeps the faint colour. Read through the palette, so the theme palette follows the person's theme.
+const level = async ($: Engine, percent: number) => {
+  await $.session.measure({ context: { window: 200_000, tokens: percent * 2000, percent }, rateLimits: [], changed: ['context'] } as never)
+}
+for (const palette of ['theme', 'pastel'] as const) {
+  for (const [percent, tone] of [[30, 'ok'], [58, 'amber'], [85, 'warn']] as const) {
+    test(`the context bar and percent are one colour at ${percent}% (${palette} palette), the track faint`, { options: { palette } }, async ($, on) => {
+      engine(on)
+      await dashboard($, 'refresh')
+      await level($, percent)
+      await compacted($)
+      const ui = await $.ui.mount(props(78))
+      const parts = ctxParts(await ui.drawn())
+      await ui.unmount()
+      const C = PALETTES[palette]
+      const barW = 39 - 7 - 5 - 2 - (1 + cells(`${percent * 2}k/200k`)) - 4 // the line's half less label, percent, spaces, detail and note
+      const filled = Math.round((percent / 100) * barW)
+      expect(parts.filter(p => /^█+$/.test(p.text)).map(p => [p.color, cells(p.text)])).toEqual([[C[tone], filled]]) // one run, one colour
+      expect(parts.filter(p => /^░+$/.test(p.text)).map(p => [p.color, cells(p.text)])).toEqual([[C.faint, barW - filled]])
+      expect(parts.find(p => p.text.trim() === `${percent}%`)).toMatchObject({ color: C[tone], bold: true })
+      expect(parts.find(p => p.text.includes('k/200k'))).toMatchObject({ dim: true })
+      expect(parts.find(p => p.text.includes('⟲1'))?.color).toBe(C.amber)
+    })
+  }
+}
+
+/** The Box that wraps the context line. */
+const ctxBox = (tree: unknown) => within(tree, n => isBox(n) && kids(n).some(k => k.type === 'Text' && /^Context /.test(textOf(k))))[0]
+
+// The line starts at the left edge of the width it is given (not centred) and is followed by one blank row, drawn only with the line.
+for (const [columns, shape] of [[78, 'two to a row'], [64, 'stacked'], [120, 'wide']] as const) {
+  test(`${shape}: the context line is left-aligned in its column and has one blank row below`, async ($, on) => {
+    engine(on)
+    await dashboard($, 'refresh')
+    await measured($)
+    const ui = await $.ui.mount(props(columns))
+    const box = ctxBox(await ui.drawn())
+    await ui.unmount()
+    expect(box?.props).toMatchObject({ marginBottom: 1, width: columns >= 110 ? Math.floor((columns - 2) / 2) : columns })
+    expect(box?.props?.justifyContent).not.toBe('center')
+    expect(box?.props?.alignItems).not.toBe('center')
+  })
+}
+
+test('with no context reading there is no context line, no wrapper and no blank row', async ($, on) => {
+  engine(on)
+  await dashboard($, 'refresh')
+  const ui = await $.ui.mount(props(78))
+  const tree = await ui.drawn()
+  await ui.unmount()
+  expect(ctxBox(tree)).toBeUndefined()
+  expect(within(tree, n => isBox(n) && n.props?.marginBottom === 1 && n.props?.width === 78)).toEqual([])
+})
+
+// Wide: the context is still one line under the main block, in the left column, and half as wide as that column.
+test('wide: the context line comes after the Codex box in the left column, half as wide as the column', async ($, on) => {
   engine(on)
   await dashboard($, 'refresh')
   await check($)
@@ -427,7 +494,7 @@ test('wide: the context line comes after the Codex box in the left column, as wi
   const [main, codex, weekly, ctx, branch] = [at(/ · main/), at(/^Codex · /), at(/^weekly /), at(CTX), at(/^🔀 main/)]
   expect([main >= 0, codex > main, weekly > codex, ctx > weekly, branch > ctx]).toEqual([true, true, true, true, true])
   expect(lines[ctx]?.inside).toBe(false)
-  expect(cells(lines[ctx]?.text ?? '')).toBe(Math.floor((120 - 2) / 2))
+  expect(cells(lines[ctx]?.text ?? '')).toBe(ctxWidth(Math.floor((120 - 2) / 2), 14))
 })
 
 test('the context line follows the main box when there is no Codex box', async ($, on) => {
@@ -448,11 +515,11 @@ test('the context belongs to the main box: without it in the panels list there i
   await dashboard($, 'refresh')
   await measured($)
   const ui = await $.ui.mount(props(78))
-  expect(await ui.find({ text: /^ctx / })).toBeUndefined()
+  expect(await ui.find({ text: /^Context / })).toBeUndefined()
   await ui.unmount()
 })
 
-// With the context line in the column, the main box is a row shorter and the line takes that row.
+// With the context line in the column, the line takes two rows: its own and the blank one below.
 test('the log is given the rows the context line leaves it', async ($, on) => {
   engine(on)
   await dashboard($, 'refresh')
@@ -465,6 +532,6 @@ test('the log is given the rows the context line leaves it', async ($, on) => {
     await ui.unmount()
     return n
   }
-  // Stacked: 35 rows of panels (the main box 4, the context 1), so 44 rows leave 6; two to a row: 27, so 36 leave 6.
-  expect([await logRowsOf(64, 44), await logRowsOf(78, 36)]).toEqual([6, 6])
+  // Stacked: 36 rows of panels (the main box 4, the context 2 with its blank row), so 45 rows leave 6; two to a row: 28, so 37 leave 6.
+  expect([await logRowsOf(64, 45), await logRowsOf(78, 37)]).toEqual([6, 6])
 })

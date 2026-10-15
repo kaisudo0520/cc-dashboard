@@ -521,7 +521,7 @@ test('each rate-limit window has a row of its own with the time to its reset; th
     const boxed = boxedLines(tree)
     await ui.unmount()
     const at = (re: RegExp) => lines.findIndex(l => re.test(l))
-    return { lines, boxed, five: at(/^5h +━+─* +19% ⏱  3h10m$/), week: at(/^7d +━*─+ +3% ⏱  4d2h$/), context: at(/^ctx +━+─+ +58% 116k\/200k( +⟲1)?$/) }
+    return { lines, boxed, five: at(/^5h +━+─* +19% ⏱  3h10m$/), week: at(/^7d +━*─+ +3% ⏱  4d2h$/), context: at(/^Context +█+░+ +58% 116k\/200k( +⟲1)?$/) }
   }
   // At 120 columns the pane is wide and the main box takes half of it.
   const panelOf = (cols: number) => (cols >= 110 ? Math.floor((cols - 2) / 2) : cols)
@@ -537,12 +537,13 @@ test('each rate-limit window has a row of its own with the time to its reset; th
       expect(new Set(windows.map(l => l.indexOf('%'))).size).toBe(1)
       // The windows fit inside the box's frame and padding.
       expect(windows.every(l => cells(l) <= panelOf(cols) - 4)).toBe(true)
-      // The context is not in the main box (nor any box) and has the pane's whole width: no frame, bar sized by its own detail.
-      expect(boxed.some(l => /^ctx /.test(l))).toBe(false)
+      // The context is not in the main box (nor any box) and takes half the pane's width: no frame, bar sized by its own detail.
+      expect(boxed.some(l => /^Context /.test(l))).toBe(false)
       const ctxLine = lines[context] ?? ''
       const detailW = cells(`116k/200k${compacted ? '  ⟲1' : ''}`)
-      expect(ctxLine.match(/[━─]+/)?.[0].length).toBe(panelOf(cols) - 3 - 5 - 3 - detailW)
-      expect(cells(ctxLine)).toBe(panelOf(cols))
+      const barW = Math.max(4, Math.round(panelOf(cols) / 2) - 7 - 5 - 3 - detailW) // never under four cells
+      expect(ctxLine.match(/[█░]+/)?.[0].length).toBe(barW)
+      expect(cells(ctxLine)).toBe(7 + 5 + 3 + detailW + barW)
     }
   }
 })
