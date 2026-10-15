@@ -67,6 +67,7 @@ export const normalizeCard = (stored: unknown): AgentCard =>
       id: '',
       type: 'agent',
       model: '',
+      effort: '',
       description: '',
       status: 'running',
       spawnedAt: 0,
@@ -436,19 +437,31 @@ export const receiptOf = (t: Turn, o: { durationMs: number; agentsSince: number;
 
 type StepUsage = { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; output_tokens?: number } | null
 
-/** A card after one of its model requests: its context is the latest step's whole input; output adds up. */
-export const applyStep = (c: AgentCard, s: { model: string; usage: StepUsage; stopReason: string | null }): AgentCard => {
+/**
+ * A card after one of its model requests: its context is the latest step's whole input; output adds up.
+ * Its model is first-wins (the spawn's, else the first step's) but its effort is latest-wins: the latest
+ * step that carried one, and a step without one keeps the previous.
+ */
+export const applyStep = (c: AgentCard, s: { model: string; effort?: string | number; usage: StepUsage; stopReason: string | null }): AgentCard => {
   const u = s.usage ?? {}
   const ctx = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
   return {
     ...c,
     model: c.model || s.model,
+    effort: s.effort === undefined ? c.effort : String(s.effort),
     steps: c.steps + 1,
     ctx: ctx > 0 ? ctx : c.ctx,
     out: c.out + (u.output_tokens ?? 0),
     lastStop: s.stopReason,
   }
 }
+
+/**
+ * A card's kind line: its type, its model when that is not the main loop's (`mainModel`, as prettyModel
+ * spells it), and its effort when it has one, as the main box says it.
+ */
+export const cardKind = (c: AgentCard, mainModel: string) =>
+  [c.type, ...(!c.model || prettyModel(c.model) === mainModel ? [] : [prettyModel(c.model)]), ...(c.effort ? [c.effort] : [])].join(' · ')
 
 export const noteTool = (c: AgentCard, n: ToolNote): AgentCard => ({ ...c, tools: [...c.tools, n].slice(-3) })
 
@@ -584,7 +597,7 @@ const METER_MIN = 4
 const METER_MAX = 40
 /** The percent column, right-aligned after a space: `100%`, or `~100%` past its reset. */
 const METER_PCT_W = 5
-/** The detail column: `⏱  10d23h` (two spaces after the clock), `stale`, or the context's `116k/200k`. */
+/** The detail column of a boxed row: `⏱  10d23h` (two spaces after the clock) or `stale`. */
 const METER_DETAIL_W = 9
 
 /** One usage row as the pane draws it: `pct` null is a window not read yet. */
@@ -610,10 +623,11 @@ export const meterWidth = (panelW: number, labelW: number, details: readonly str
 
 /**
  * The bar of a line drawn without a box, alone in its row (the context): whatever the label, the
- * percent and its own detail leave of the whole `lineW`, with no upper cap, so the line spans the pane.
+ * percent, its own detail and its note leave of the whole `lineW`, with no upper cap, so the line spans
+ * the pane. The detail has a space before it only when there is one; the note follows as written.
  */
-export const lineMeterWidth = (lineW: number, labelW: number, detail: string) =>
-  Math.max(METER_MIN, lineW - labelW - METER_PCT_W - 3 - cells(detail))
+export const lineMeterWidth = (lineW: number, labelW: number, detail: string, note = '') =>
+  Math.max(METER_MIN, lineW - labelW - METER_PCT_W - 2 - (detail ? 1 + cells(detail) : 0) - cells(note))
 
 /** `s` padded with spaces to `width` cells, a wide character counting two. */
 export const padCells = (s: string, width: number) => s + ' '.repeat(Math.max(0, width - cells(s)))
@@ -659,11 +673,12 @@ export const pathRows = (s: GitSnap, isOpen: boolean) => {
 // ---------------------------------------------------------------- Codex runs as cards
 
 /** A `codex exec` run the main session started, as a running card: no steps or tokens to tell. */
-export const codexCard = (id: string, call: { purpose: string; note?: string }, model: string, at: number): AgentCard => ({
+export const codexCard = (id: string, call: { purpose: string; note?: string }, model: string, at: number, effort = ''): AgentCard => ({
   ...normalizeCard({}),
   id,
   type: 'Codex',
   model,
+  effort,
   description: call.note ? `${call.purpose}: ${call.note}` : call.purpose,
   spawnedAt: at,
   codex: {},

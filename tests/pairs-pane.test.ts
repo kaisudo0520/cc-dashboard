@@ -393,6 +393,43 @@ test('the context line spans the whole pane, with the compaction note and withou
   expect([await widths(78), await widths(64), await widths(100)]).toEqual([78, 64, 100])
 })
 
+// A context read with no token figure has no detail: the row leaves out its space, so the bar takes it.
+test('the context line spans the whole pane with no token figure, with the compaction note and without', async ($, on) => {
+  engine(on)
+  await dashboard($, 'refresh')
+  await check($)
+  await $.session.measure({ context: { window: 200_000, percent: 58 }, rateLimits: [], changed: ['context'] } as never)
+  const widths = async (columns: number) => {
+    const ui = await $.ui.mount(props(columns))
+    const text = textLines(await ui.drawn()).find(l => /^ctx /.test(l.text))?.text ?? ''
+    await ui.unmount()
+    return { text, w: cells(text) }
+  }
+  const bare = await widths(78)
+  expect(bare.text).toMatch(/^ctx +[━─]+ +58%$/)
+  expect([bare.w, (await widths(64)).w, (await widths(100)).w]).toEqual([78, 64, 100])
+  await compacted($)
+  expect((await widths(78)).text).toMatch(/^ctx +[━─]+ +58% {2}⟲1$/)
+  expect([(await widths(78)).w, (await widths(64)).w, (await widths(100)).w]).toEqual([78, 64, 100])
+})
+
+// Wide: the context is still one line under the main block, in the left column, and as wide as that column.
+test('wide: the context line comes after the Codex box in the left column, as wide as the column', async ($, on) => {
+  engine(on)
+  await dashboard($, 'refresh')
+  await check($)
+  await measured($)
+  await compacted($)
+  const ui = await $.ui.mount(props(120))
+  const lines = textLines(await ui.drawn())
+  await ui.unmount()
+  const at = (re: RegExp) => lines.findIndex(l => re.test(l.text))
+  const [main, codex, weekly, ctx, branch] = [at(/ · main/), at(/^Codex · /), at(/^weekly /), at(CTX), at(/^🔀 main/)]
+  expect([main >= 0, codex > main, weekly > codex, ctx > weekly, branch > ctx]).toEqual([true, true, true, true, true])
+  expect(lines[ctx]?.inside).toBe(false)
+  expect(cells(lines[ctx]?.text ?? '')).toBe(Math.floor((120 - 2) / 2))
+})
+
 test('the context line follows the main box when there is no Codex box', async ($, on) => {
   engine(on, { codex: false })
   await dashboard($, 'refresh')

@@ -149,13 +149,17 @@ export const parseCodexReading = (text: string): CodexReading | undefined => {
 export const parseCodexLimits = (text: string): Pick<CodexQuota, 'fiveHour' | 'weekly'> | undefined =>
   parseCodexReading(text)?.limits
 
-/** The reasoning effort `~/.codex/config.toml` selects. */
-export const parseCodexEffort = (toml: string): string | undefined =>
-  /^model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(toml)?.[1]
-
 // The choice file is read by the rules and the slug ends up in `codex exec -m
-// <slug>`, so only what a real model name looks like is accepted.
+// <slug>`, so only what a real model name looks like is accepted. The config's
+// effort is drawn in cards and panels, so it has to look like a slug too.
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
+
+/** The reasoning effort `~/.codex/config.toml` selects; a value that is not slug-like (control characters, escapes, bidi marks) is no effort. */
+export const parseCodexEffort = (toml: string): string | undefined => {
+  const value = /^model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(toml)?.[1]
+
+  return value !== undefined && SLUG.test(value) ? value : undefined
+}
 
 /** The model `~/.claude/model-choice.json` pins Codex calls to: its `codex` key. Read only. */
 export const parseChoice = (json: string): string | undefined => {

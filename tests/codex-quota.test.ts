@@ -69,6 +69,13 @@ test('parseCodexEffort reads the reasoning effort the config selects', async () 
   expect(parseCodexEffort('')).toBeUndefined()
 })
 
+test('parseCodexEffort accepts only a slug-like value; control characters, escapes, bidi marks and newlines mean no effort', async () => {
+  expect(parseCodexEffort('model_reasoning_effort = "xhigh"\n')).toBe('xhigh')
+  for (const bad of ['\u001b[31mhigh', 'hi\u0007gh', '\u202ehigh', 'hi\ngh', 'hi gh', '', 'a'.repeat(65)]) {
+    expect(parseCodexEffort(`model_reasoning_effort = "${bad}"\n`)).toBeUndefined()
+  }
+})
+
 test('parseChoice reads the codex model the rules are pinned to, and only a model-like name', async () => {
   expect(parseChoice('{"codex":"gpt-6-sol","other":1}')).toBe('gpt-6-sol')
   expect(parseChoice('{"codex":"gpt 6; rm -rf"}')).toBeUndefined()

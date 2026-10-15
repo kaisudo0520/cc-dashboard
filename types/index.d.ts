@@ -48,6 +48,8 @@ export type AgentCard = {
   id: string
   type: string
   model: string
+  /** The effort of its latest step, as the main box says it (`high`, or a number); empty when it has none. */
+  effort: string
   description: string
   status: string
   spawnedAt: number

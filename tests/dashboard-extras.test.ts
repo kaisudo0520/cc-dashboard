@@ -517,6 +517,36 @@ test('the Codex helpers: a run is a card, ended once, settled at a stop, found b
   expect(codexCardFor([card, bg], 'zz', 'c1')?.id).toBe('c1')
 })
 
+test('a Codex card carries the effort its config selects, if any', async ($, on) => {
+  const card = codexCard('c1', { purpose: 'Codex review' }, 'gpt-6-sol', 5, 'high')
+  expect(card.effort).toBe('high')
+  expect(codexCard('c2', { purpose: 'Codex review' }, 'gpt-6-sol', 5).effort).toBe('')
+  engine(on, {
+    rollout: codexLine(13, inSeconds(2 * HOUR_MS), 40, inSeconds(48 * HOUR_MS)),
+    files: { [`${HOME}/.codex/config.toml`]: 'model_reasoning_effort = "high"\n', [`${HOME}/.claude/model-choice.json`]: '{"codex":"gpt-6-sol"}' },
+    toolResult: { result: SHELL_OUT },
+  })
+  await refresh($)
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN, description: 'x' } as never)
+  const ui = await $.ui.mount(props(64))
+  expect((await ui.findAll({ type: 'Text', text: /^Codex · gpt-6-sol · high$/ })).length).toBe(2) // the panel header and the card's line read alike
+  await ui.unmount()
+})
+
+test('a config effort with control characters is no effort: neither the panel nor the card shows it', async ($, on) => {
+  engine(on, {
+    rollout: codexLine(13, inSeconds(2 * HOUR_MS), 40, inSeconds(48 * HOUR_MS)),
+    files: { [`${HOME}/.codex/config.toml`]: 'model_reasoning_effort = "\u001b[31mhigh\u202e"\n', [`${HOME}/.claude/model-choice.json`]: '{"codex":"gpt-6-sol"}' },
+    toolResult: { result: SHELL_OUT },
+  })
+  await refresh($)
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'c1', command: PLAN, description: 'x' } as never)
+  const ui = await $.ui.mount(props(64))
+  expect((await ui.findAll({ type: 'Text', text: /^Codex · gpt-6-sol$/ })).length).toBe(2)
+  expect(await ui.find({ text: /\u001b|\u202e/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('a codex exec is a running subagent card while its call runs, then done, with no session id', async ($, on) => {
   const { w } = engine(on, { toolResult: { result: SHELL_OUT } })
   let during: { running?: unknown; title?: unknown } = {}
@@ -576,10 +606,13 @@ test('at a stop, a background run the engine no longer lists is done; one it lis
   await done.unmount()
 })
 
-test('a meter line with no frame takes the whole width less its label, percent and detail, with no cap', () => {
-  expect(lineMeterWidth(30, 3, '116k/200k  ⟲2')).toBe(6) // 30 - 3 label - 5 percent - 3 spaces - 13 detail
-  expect(lineMeterWidth(78, 3, '116k/200k  ⟲2')).toBe(54)
+test('a meter line with no frame takes the whole width less its label, percent, detail and note, with no cap', () => {
+  expect(lineMeterWidth(30, 3, '116k/200k', '  ⟲2')).toBe(6) // 30 - 3 label - 5 percent - 3 spaces - 9 detail - 4 note
+  expect(lineMeterWidth(78, 3, '116k/200k', '  ⟲2')).toBe(54)
   expect(lineMeterWidth(78, 3, '116k/200k')).toBe(58)
   expect(lineMeterWidth(10, 3, '116k/200k')).toBe(4) // never under four cells
+  // No detail: the row has no space for it, so the bar takes that cell too (label, bar and percent are drawn with two spaces).
+  expect(lineMeterWidth(78, 3, '')).toBe(68)
+  expect(lineMeterWidth(78, 3, '', '  ⟲2')).toBe(64)
   expect(meterWidth(200, 3, ['116k/200k'])).toBe(40) // the boxed rows keep their cap
 })

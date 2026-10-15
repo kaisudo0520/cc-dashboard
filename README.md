@@ -9,12 +9,12 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 | 面板 | 顯示 | 來源 |
 | :- | :- | :- |
 | **等你回應**（標頭下一行紅字） | 只在「另一個仍在執行的 Claude Code session 正在等你」時出現：`! waiting on you: <session 名稱> <permission／question> <等待時間，如 3m ago>`，多個時加 ` · +<n> more`（等最久的在前）。沒人在等就整行不存在 | 見下方「等你回應」 |
-| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊。上下文量表 `ctx`（已用 %、`116k/200k`、壓縮次數 ⟲）不在框內：它是主模型框（旁邊有 Codex 框時，是它們）正下方的單獨一行，沒有框線，長條撐滿整個窗格寬度（不像框內的長條最長 40 格）；`panels` 沒有 `main` 時不顯示，讀不到上下文時也不顯示 | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
+| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊。上下文量表 `ctx`（已用 %、`116k/200k`、壓縮次數 ⟲）不在框內：它是主模型框（旁邊有 Codex 框時，是它們）正下方的單獨一行，沒有框線，長條撐滿所在欄的寬度（寬版時是左欄，其餘是整個窗格；不像框內的長條最長 40 格）；`panels` 沒有 `main` 時不顯示，讀不到上下文時也不顯示 | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
 | **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`） | 見下方「Codex 額度」 |
 | **分支** | `🔀 <分支名>`、`↔ <upstream> ↑ahead ↓behind`（沒有 upstream 顯示 `no upstream`）；**`unreviewed N files · changed M files`**。全部審過顯示 `✓ unreviewed 0`，無法判斷時顯示 `unreviewed ?`（絕不顯示成 0）。有未審檔案時 `u` 展開清單（最多 8 行，其餘以 `… N more` 計） | 見下方「分支」 |
 | **顧問** | 諮詢時間軸、是否正在諮詢、上次耗時；推測的時機（`before a plan`／`error repeats`／`before done`，標 `(inferred)`）；子代理顧問建議的第一行 | 符合樣式的 agent 類型，或 assistant 列中的 server tool |
 | **權限** | 每次權限檢查一格：綠＝規則允許、藍＝分類器或你允許後執行、黃＝待決、紅 ✗＝拒絕，子代理內的較暗。總計，與依工具類別（`f` file／`s` shell／`o` other）展開最近 5 筆（憑證遮蔽） | `tool.check`，由其後的 `tool.call` 結算 |
-| **子代理** | 放得下時並排卡片：任務、類型、ctx 與輸出 tokens、步數、計時、紅色 `max_tokens`；放不下時改為同一時間軸的泳道。`1`–`6` 展開：完整任務、最近 3 個工具呼叫、回答開頭。**`codex exec` 也是一張卡片**：類型 `Codex`、任務為用途（`Codex plan draft`／`Codex review`／`Codex resume`／`Codex`，加上呼叫的 description），計入 running，不顯示 Codex session id | `agent.spawn`、`turn.step`、`tool.call`、`turn.complete`；Codex 見下方 |
+| **子代理** | 放得下時並排卡片：任務、類型、模型（與主模型相同時省略）與強度（`high`；數字強度照數字顯示；沒有強度就不顯示）、ctx 與輸出 tokens、步數、計時、紅色 `max_tokens`；放不下時改為同一時間軸的泳道。`1`–`6` 展開：完整任務、模型與強度、最近 3 個工具呼叫、回答開頭。**`codex exec` 也是一張卡片**：類型 `Codex`、模型與強度（取自 Codex 面板讀到的設定）、任務為用途（`Codex plan draft`／`Codex review`／`Codex resume`／`Codex`，加上呼叫的 description），計入 running，不顯示 Codex session id | `agent.spawn`、`turn.step`、`tool.call`、`turn.complete`；Codex 見下方 |
 | **其他迴圈** | 沒有卡片認領的模型迴圈：workflow agent、壓縮、記憶分支 | 沒有卡片的 `turn.step` id |
 | **回合收據** | 進行中的回合或上一回合：耗時、子代理數、編輯數、錯誤數 | `turn.start`、`turn.complete` |
 | **工作紀錄** | 提示、啟動、完成、諮詢、編輯、錯誤與拒絕；檢視某子代理 transcript 時只列它的 | 以上全部 |

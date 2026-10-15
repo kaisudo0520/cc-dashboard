@@ -14,6 +14,7 @@ import {
   SCHEMA_VERSION,
   afterCall,
   applyStep,
+  cardKind,
   bucketOf,
   cardTitle,
   titleLines,
@@ -484,7 +485,8 @@ async function readOthers($: EngineInterface): Promise<number> {
 // (inferred) by the turn's stop. No Codex session id is read.
 
 async function codexStarted($: EngineInterface, id: string, call: { purpose: string; note?: string }) {
-  const card = codexCard(id, call, (await read($, codex))?.model ?? '', await $.clock.now())
+  const codexNow = await read($, codex)
+  const card = codexCard(id, call, codexNow?.model ?? '', await $.clock.now(), codexNow?.effort ?? '')
   await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
   await say($, shorten(cardTitle(card), 12), 'spawned · Codex', 'info', id)
 }
@@ -690,7 +692,7 @@ export const register: Register = (on, options) => {
     const id = e.agentId
     const [cards, a] = await Promise.all([getCards($), getArchitect($)])
     if (cards.some(c => c.id === id)) {
-      const step = { model: e.model, usage: result.usage, stopReason: result.stopReason }
+      const step = { model: e.model, effort: e.effort, usage: result.usage, stopReason: result.stopReason }
       await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? applyStep(c, step) : c)))
       if (result.stopReason === 'max_tokens') await say($, await whoIs($, id), 'hit max_tokens', 'error', id)
     } else if (!a.ids.includes(id)) {
@@ -1070,10 +1072,10 @@ export const register: Register = (on, options) => {
         </Text>
       )
     }
-    // The label column and bar width a panel's rows share; `details` is what follows each percent.
-    const meterLayout = (rows: Meter[], w: number, details = rows.map(r => r.detail)) => {
+    // The label column and bar width a panel's rows share, the bar sized by the widest detail after a percent.
+    const meterLayout = (rows: Meter[], w: number) => {
       const labelW = Math.max(0, ...rows.map(r => cells(r.label)))
-      return { labelW, barW: meterWidth(w, labelW, details) }
+      return { labelW, barW: meterWidth(w, labelW, rows.map(r => r.detail)) }
     }
 
     // ---- main
@@ -1120,7 +1122,7 @@ export const register: Register = (on, options) => {
     }
     // The context: one line the pane's whole width, no box; its bar is sized by its own detail and note.
     const ctxLine = (w: number) =>
-      ctxMeter ? meterRow('context', ctxMeter, { labelW: cells(ctxMeter.label), barW: lineMeterWidth(w, cells(ctxMeter.label), ctxMeter.detail + ctxNote) }, C.main, ctxNote) : null
+      ctxMeter ? meterRow('context', ctxMeter, { labelW: cells(ctxMeter.label), barW: lineMeterWidth(w, cells(ctxMeter.label), ctxMeter.detail, ctxNote) }, C.main, ctxNote) : null
 
     // ---- architect
     const lastConsult = a.consults[a.consults.length - 1]
@@ -1313,7 +1315,6 @@ export const register: Register = (on, options) => {
           <Box columnGap={1}>
             {shown.map((c, i) => {
               const isViewed = viewed === c.id
-              const sameModel = !c.model || prettyModel(c.model) === modelName
               return (
                 <Box
                   flexDirection="column"
@@ -1328,7 +1329,7 @@ export const register: Register = (on, options) => {
                     {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
                   </Text>
                   <Text color={C.dim} wrap="truncate">
-                    {sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`}
+                    {cardKind(c, modelName)}
                   </Text>
                   <Text dimColor wrap="truncate">
                     {c.codex ? 'codex exec' : c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${c.steps} st` : 'starting…'}
@@ -1355,7 +1356,7 @@ export const register: Register = (on, options) => {
           <Text bold wrap="wrap">
             {expandedCard.description || expandedCard.type}
           </Text>
-          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
+          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)}${expandedCard.effort ? ` · ${expandedCard.effort}` : ''} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
           {expandedCard.tools.length === 0 && !expandedCard.codex ? <Text color={C.faint}>no tool calls yet</Text> : null}
           {expandedCard.tools.map(n => (
             <Text color={n.isError ? C.warn : C.text} wrap="truncate">

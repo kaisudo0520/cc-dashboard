@@ -7,6 +7,7 @@ import {
   DEFAULT_TURN,
   afterCall,
   applyStep,
+  cardKind,
   cells,
   consultTimeline,
   describeInput,
@@ -118,6 +119,28 @@ test("a card's context is its latest step's whole input; output adds up", () => 
   c = applyStep(c, { model: 'claude-sonnet-5-5', usage: { input_tokens: 10, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_000, output_tokens: 500 }, stopReason: 'tool_use' })
   c = applyStep(c, { model: 'claude-sonnet-5-5', usage: { input_tokens: 5, cache_read_input_tokens: 40_000, output_tokens: 700 }, stopReason: 'max_tokens' })
   expect([c.ctx, c.out, c.steps, c.lastStop, c.model]).toEqual([40_005, 1200, 2, 'max_tokens', 'claude-sonnet-5-5'])
+})
+
+test("a card keeps its latest step's effort; a step without one leaves it; a number reads as the main box shows it", () => {
+  const usage = { input_tokens: 1, output_tokens: 1 }
+  let c = normalizeCard({ id: 'x' })
+  expect(c.effort).toBe('')
+  c = applyStep(c, { model: 'claude-sonnet-5-5', usage, stopReason: 'tool_use', effort: 'high' })
+  expect(c.effort).toBe('high')
+  c = applyStep(c, { model: 'claude-sonnet-5-5', usage, stopReason: 'tool_use' })
+  expect(c.effort).toBe('high')
+  c = applyStep(c, { model: 'claude-sonnet-5-5', usage, stopReason: 'end_turn', effort: 8000 })
+  expect(c.effort).toBe('8000')
+})
+
+test("a card's kind line: the type, the model when it is not the main one's, and the effort when it has one", () => {
+  const sonnet = normalizeCard({ id: 'x', type: 'Explore', model: 'claude-sonnet-5-5' })
+  expect(cardKind(sonnet, 'Opus 5.5')).toBe('Explore · Sonnet 5.5')
+  expect(cardKind({ ...sonnet, effort: 'high' }, 'Opus 5.5')).toBe('Explore · Sonnet 5.5 · high')
+  expect(cardKind({ ...sonnet, effort: '8000' }, 'Opus 5.5')).toBe('Explore · Sonnet 5.5 · 8000')
+  expect(cardKind({ ...sonnet, effort: 'high' }, 'Sonnet 5.5')).toBe('Explore · high') // the main model: not repeated, the effort still is
+  expect(cardKind(sonnet, 'Sonnet 5.5')).toBe('Explore')
+  expect(cardKind({ ...sonnet, model: '', effort: 'low' }, 'Opus 5.5')).toBe('Explore · low')
 })
 
 test('consults open, close by id, and draw on a shared timeline', () => {
@@ -415,6 +438,36 @@ test('cards that cannot fit the pane fall back to lanes', async ($, on) => {
   expect(await wide.find({ text: /━/ })).toBeUndefined() // three cards fit in 70
   expect(await wide.find({ text: /task gamma/ })).toBeDefined()
   await wide.unmount()
+})
+
+test('a subagent card says its model and effort; with no effort it says the model alone', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `ef${++n}` }))
+  on('turn.step', async function* () {
+    const usage = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' }
+    return { turnId: 'EF', index: 0, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage }
+  })
+  await $.turn.start({ text: 'go', turnId: 'EF' })
+  for (const d of ['one', 'two', 'three']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  const step = async (agentId: string, effort?: 'high' | number) => {
+    const s = $.turn.step({ turnId: 'EF', index: 0, model: 'claude-sonnet-5-5', messageCount: 1, agentId, ...(effort === undefined ? {} : { effort }) })
+    for await (const _ of s) void _
+    await s.result
+  }
+  await step('ef1', 'high')
+  await step('ef3', 8000)
+  for (const cols of [64, 70]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(await ui.find({ text: 'Explore · Sonnet 5.5 · high' })).toBeDefined()
+    expect(await ui.find({ text: 'Explore · Sonnet 5.5' })).toBeDefined() // ef2: no effort, the model alone
+    expect(await ui.find({ text: 'Explore · Sonnet 5.5 · 8000' })).toBeDefined()
+    await ui.unmount()
+  }
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-ef1' })
+  expect(await ui.find({ text: 'Explore · Sonnet 5.5 · high · running · 1 steps' })).toBeDefined() // the expanded panel
+  await ui.unmount()
 })
 
 test("a background architect's advice is read from its hand-back", async ($, on) => {
