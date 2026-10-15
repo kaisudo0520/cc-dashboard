@@ -597,7 +597,7 @@ export const claudeWindows = (limits: readonly { kind: string; pct: number; rese
 // ---------------------------------------------------------------- usage rows
 
 /** The cells a round-bordered panel with one cell of padding on each side takes from its width. */
-const PANEL_FRAME = 4
+export const PANEL_FRAME = 4
 const METER_MIN = 4
 const METER_MAX = 40
 /** The percent column, right-aligned after a space: `100%`, or `~100%` past its reset. */
@@ -699,3 +699,64 @@ export const stopCodex = (cards: AgentCard[], liveIds: readonly string[] | undef
 /** The card a notification ends: by its background task id, else by the shell call that started it. */
 export const codexCardFor = (cards: AgentCard[], taskId: string, toolUseId: string | undefined) =>
   cards.find(c => c.codex !== undefined && (c.codex.taskId === taskId || (toolUseId !== undefined && c.id === toolUseId)))
+
+// ---------------------------------------------------------------- panels side by side
+
+/** The narrowest pane that seats two panels in a row. */
+const PAIR_MIN_COLUMNS = 70
+
+/** The two panels' widths in a pane `w` wide, a cell between them, the left one taking the odd cell; null when too narrow. */
+export const pairWidths = (w: number): [number, number] | null =>
+  w < PAIR_MIN_COLUMNS ? null : [Math.ceil((w - 1) / 2), Math.floor((w - 1) / 2)]
+
+/** A row of the single column: one panel, or two side by side (the left one first). */
+export type PairRow = Panel | readonly [Panel, Panel]
+
+const PAIRS: readonly (readonly [Panel, Panel])[] = [
+  ['main', 'codex'],
+  ['git', 'gate'],
+]
+
+/**
+ * The single column's rows when panels may share one. The gate rises over the architect to sit
+ * beside the branch; a pair forms only for panels listed next to each other (in either order),
+ * so a person's own `panels` order is kept and a panel without its partner has a row to itself.
+ */
+export const pairRows = (panels: readonly Panel[]): PairRow[] => {
+  const g = panels.indexOf('git')
+  const k = panels.indexOf('gate')
+  const lifted =
+    g >= 0 && k > g && panels.slice(g + 1, k).every(p => p === 'architect')
+      ? [...panels.slice(0, g + 1), 'gate' as const, ...panels.slice(g + 1, k), ...panels.slice(k + 1)]
+      : [...panels]
+  const rows: PairRow[] = []
+  for (let i = 0; i < lifted.length; i++) {
+    const [a, b] = [lifted[i], lifted[i + 1]]
+    const pair = PAIRS.find(([x, y]) => (a === x && b === y) || (a === y && b === x))
+    if (pair) i++
+    rows.push(pair ?? (a as Panel))
+  }
+  return rows
+}
+
+/** The cells the effort bar and its space take ahead of the narrow effort line's effort. */
+const EFFORT_LEAD = 5
+
+/**
+ * The main box's effort line when two boxes share a row: `▮▮▮▯ high · auto · 12 req`. The bar is
+ * drawn by the caller; the mode is cut (or left out) so the line fits `inner` cells.
+ */
+export const narrowEffort = (effort: string, mode: string, steps: number, inner: number) => {
+  const label = effort || '—'
+  const count = ` · ${steps} req`
+  const room = inner - EFFORT_LEAD - cells(label) - cells(count) - 3
+  const shown = mode && room >= 2 ? shorten(mode, room) : ''
+  return { effort: label, tail: `${shown ? ` · ${shown}` : ''}${count}` }
+}
+
+/** The rows that items `widths` wide take in a wrapping row of `inner` cells with `gap` cells between them. */
+export const wrapRows = (widths: readonly number[], inner: number, gap: number) =>
+  widths.reduce(
+    (s, w) => (s.rows > 0 && s.used + gap + w <= inner ? { rows: s.rows, used: s.used + gap + w } : { rows: s.rows + 1, used: w }),
+    { rows: 0, used: 0 },
+  ).rows

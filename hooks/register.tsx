@@ -60,12 +60,16 @@ import {
   listOf,
   logRows,
   momentOf,
+  narrowEffort,
   normalize,
   normalizeCard,
   normalizeGate,
   normalizeLog,
   noteTool,
   PALETTES,
+  PANEL_FRAME,
+  pairRows,
+  pairWidths,
   SVG_COLORS,
   parseConfig,
   prettyModel,
@@ -79,8 +83,9 @@ import {
   startConsult,
   stepSpeed,
   stepLoop,
+  wrapRows,
 } from './core'
-import type { Config, Meter, Panel } from './core'
+import type { Config, Meter, Panel, PairRow } from './core'
 import { describeCodex } from './lib/codex'
 import { ROLLOUT_QUERY, readCodexQuota } from './lib/codex-quota'
 import { FABLE_POLL_MS, fableFromUsage, nextFableDelay } from './lib/fable'
@@ -1022,6 +1027,10 @@ export const register: Register = (on, options) => {
       log: false,
     }
     const panels = cfg.panels.filter(p => !isEmpty[p])
+    // The single column seats two panels to a row when the pane is wide enough and the person left the layout on auto.
+    const pairing = layout === 'auto' && !isWide ? pairWidths(W) : null
+    const rows = pairing ? pairRows(panels) : panels
+    const isPaired = (a: Panel, b: Panel) => rows.some(r => typeof r !== 'string' && r[0] === a && r[1] === b)
     const decider = m.mode === 'auto' ? 'classifier' : 'you'
 
     // A connector between panels: animated while its flow is live, a dim line otherwise.
@@ -1087,8 +1096,10 @@ export const register: Register = (on, options) => {
         : null
     const ctxNote = u.compactions > 0 ? `  ⟲${u.compactions}` : ''
     const mainMeters = ctxMeter ? [...usageMeters, ctxMeter] : usageMeters
-    const mainPanel = (w: number) => {
+    const mainPanel = (w: number, isNarrow = false) => {
       const layout = meterLayout(mainMeters, w, [...usageMeters.map(r => r.detail), ...(ctxMeter ? [ctxMeter.detail + ctxNote] : [])])
+      const effortBar = '▮'.repeat(effortN) + '▯'.repeat(4 - effortN)
+      const narrowLine = narrowEffort(m.effort, m.mode, m.steps, w - PANEL_FRAME)
       return (
         <Box flexDirection="column" borderStyle="round" borderColor={C.main} paddingX={1} width={w}>
           <Box justifyContent="space-between">
@@ -1097,17 +1108,27 @@ export const register: Register = (on, options) => {
             </Text>
             <Text color={m.isRunning ? C.main : C.dim}>{m.isRunning ? '● working' : '○ idle'}</Text>
           </Box>
-          <Text wrap="truncate">
-            <Text dimColor>effort </Text>
-            <Text color={C.main}>{'▮'.repeat(effortN) + '▯'.repeat(4 - effortN)} </Text>
-            <Text color={C.main} bold>
-              {m.effort || '—'}
+          {isNarrow ? (
+            <Text wrap="truncate">
+              <Text color={C.main}>{effortBar} </Text>
+              <Text color={C.main} bold>
+                {narrowLine.effort}
+              </Text>
+              <Text dimColor>{narrowLine.tail}</Text>
             </Text>
-            {m.mode ? <Text dimColor>{`   mode ${m.mode}`}</Text> : null}
-            <Text dimColor>{`   ${m.steps} req`}</Text>
-          </Text>
+          ) : (
+            <Text wrap="truncate">
+              <Text dimColor>effort </Text>
+              <Text color={C.main}>{effortBar} </Text>
+              <Text color={C.main} bold>
+                {m.effort || '—'}
+              </Text>
+              {m.mode ? <Text dimColor>{`   mode ${m.mode}`}</Text> : null}
+              <Text dimColor>{`   ${m.steps} req`}</Text>
+            </Text>
+          )}
           {usageMeters.map((row, i) => meterRow(`usage-${i}`, row, layout, C.main))}
-          {m.speed ? <Text dimColor wrap="truncate">{`last req  ${fmtSpeed(m.speed)}`}</Text> : null}
+          {m.speed ? <Text dimColor wrap="truncate">{`${isNarrow ? 'last' : 'last req '} ${fmtSpeed(m.speed)}`}</Text> : null}
           {ctxMeter ? meterRow('context', ctxMeter, layout, C.main, ctxNote) : null}
         </Box>
       )
@@ -1166,7 +1187,13 @@ export const register: Register = (on, options) => {
     const s = gateSummary(g)
     const verdictColor = (c: Check) =>
       c.verdict === 'rule' ? C.gate : c.verdict === 'cleared' ? C.cleared : c.verdict === 'ask' ? C.amber : C.warn
-    const gatePanel = (w: number) => {
+    const GATE_BUCKETS = ['file', 'shell', 'other'] as const
+    const bucketCount = (b: Bucket) => {
+      const tl = g.totals[b]
+      return tl.rule + tl.ask + tl.cleared + tl.deny
+    }
+    const gateButtonLabel = (b: Bucket) => `${b} ${bucketCount(b)}${v.gateOpen === b ? ' ▾' : ''}`
+    const gatePanel = (w: number, isNarrow = false) => {
       const strip = g.recent.slice(-Math.max(8, w - 4))
       const open = v.gateOpen
       return (
@@ -1185,30 +1212,41 @@ export const register: Register = (on, options) => {
               </Text>
             ))}
           </Box>
-          <Text wrap="truncate">
-            <Text color={C.gate}>■</Text>
-            <Text dimColor>{` ${s.rule} allowed  `}</Text>
-            <Text color={C.cleared}>■</Text>
-            <Text dimColor>{` ${s.cleared} ${decider}  `}</Text>
-            {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} pending  `}</Text> : null}
-            <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} denied`}</Text>
-            {w >= 80 && g.recent.some(c => c.inSubagent) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
-          </Text>
-          <Box columnGap={2}>
-            {(['file', 'shell', 'other'] as const).map((b: Bucket) => {
-              const tl = g.totals[b]
-              const n = tl.rule + tl.ask + tl.cleared + tl.deny
-              return (
-                <Button
-                  key={`gate-${b}`}
-                  plain
-                  hotkey={b[0]}
-                  label={`${b} ${n}${open === b ? ' ▾' : ''}`}
-                  dimColor={n === 0}
-                  onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === b ? null : b }))}
-                />
-              )
-            })}
+          {isNarrow ? (
+            <Box flexWrap="wrap" columnGap={2}>
+              <Text>
+                <Text color={C.gate}>■</Text>
+                <Text dimColor>{` ${s.rule} allowed`}</Text>
+              </Text>
+              <Text>
+                <Text color={C.cleared}>■</Text>
+                <Text dimColor>{` ${s.cleared} ${decider}`}</Text>
+              </Text>
+              {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} pending`}</Text> : null}
+              <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} denied`}</Text>
+            </Box>
+          ) : (
+            <Text wrap="truncate">
+              <Text color={C.gate}>■</Text>
+              <Text dimColor>{` ${s.rule} allowed  `}</Text>
+              <Text color={C.cleared}>■</Text>
+              <Text dimColor>{` ${s.cleared} ${decider}  `}</Text>
+              {s.ask > 0 ? <Text color={C.amber}>{`■ ${s.ask} pending  `}</Text> : null}
+              <Text color={s.deny > 0 ? C.warn : C.dim}>{`✗ ${s.deny} denied`}</Text>
+              {w >= 80 && g.recent.some(c => c.inSubagent) ? <Text color={C.faint}>{'  dim: in subagents'}</Text> : null}
+            </Text>
+          )}
+          <Box columnGap={2} {...(isNarrow ? { flexWrap: 'wrap' as const } : {})}>
+            {GATE_BUCKETS.map((b: Bucket) => (
+              <Button
+                key={`gate-${b}`}
+                plain
+                hotkey={b[0]}
+                label={gateButtonLabel(b)}
+                dimColor={bucketCount(b) === 0}
+                onPress={() => update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), gateOpen: normalize(DEFAULT_VIEW, x).gateOpen === b ? null : b }))}
+              />
+            ))}
           </Box>
           {open
             ? g.recent
@@ -1386,16 +1424,18 @@ export const register: Register = (on, options) => {
 
     // ---- Codex usage: percent used per window, a row each, as the main box shows Claude's
     const codexMeters = cx ? [windowMeter('5h', cx.fiveHour, now), windowMeter('weekly', cx.weekly, now)] : []
-    const codexPanel = (w: number) =>
+    const codexPanel = (w: number, isNarrow = false) =>
       cx ? (
         <Box flexDirection="column" borderStyle="round" borderColor={C.codex} paddingX={1} width={w}>
           <Box justifyContent="space-between">
             <Text color={C.codex} bold wrap="truncate">
               {plain(`Codex · ${cx.model ?? '—'}${cx.effort ? ` · ${cx.effort}` : ''}`)}
             </Text>
-            <Box flexShrink={0}>
-              <Text dimColor>quota · used</Text>
-            </Box>
+            {isNarrow ? null : (
+              <Box flexShrink={0}>
+                <Text dimColor>quota · used</Text>
+              </Box>
+            )}
           </Box>
           {codexMeters.map((row, i) => meterRow(`codex-${i}`, row, meterLayout(codexMeters, w), C.codex))}
           {cx.note ? (
@@ -1407,25 +1447,48 @@ export const register: Register = (on, options) => {
       ) : null
 
     // ---- branch: how many changed files no review has seen, and how many changed
-    const gitPanel = (w: number) => {
+    const gitPanel = (w: number, isNarrow = false) => {
       if (!gs) return null
       const { paths, hidden } = pathLines(gs, v.gitOpen ? GIT_PATH_ROWS : 0)
       const unreviewedColor = gs.unreviewed === undefined ? C.amber : gs.unreviewed === 0 ? C.gate : C.warn
+      const title = <Text color={C.branch} bold wrap="truncate">{`branch · ${gs.branch}`}</Text>
+      const changedColor = gs.changed > 0 ? C.text : C.dim
+      // Two to a row, the sync and each count have a row of their own; alone, the sync sits beside the title.
+      const head = isNarrow ? (
+        title
+      ) : (
+        <Box justifyContent="space-between" columnGap={1}>
+          {title}
+          <Box flexShrink={0}>
+            <Text dimColor>{syncLabel(gs)}</Text>
+          </Box>
+        </Box>
+      )
+      const counts = isNarrow ? (
+        [
+          <Text key="sync" dimColor wrap="truncate">
+            {syncLabel(gs)}
+          </Text>,
+          <Text key="unreviewed" color={unreviewedColor} bold wrap="truncate">
+            {unreviewedLabel(gs)}
+          </Text>,
+          <Text key="changed" color={changedColor} wrap="truncate">
+            {changedLabel(gs)}
+          </Text>,
+        ]
+      ) : (
+        <Text wrap="truncate">
+          <Text color={unreviewedColor} bold>
+            {unreviewedLabel(gs)}
+          </Text>
+          <Text color={C.dim}> · </Text>
+          <Text color={changedColor}>{changedLabel(gs)}</Text>
+        </Text>
+      )
       return (
         <Box flexDirection="column" borderStyle="round" borderColor={C.branch} paddingX={1} width={w}>
-          <Box justifyContent="space-between" columnGap={1}>
-            <Text color={C.branch} bold wrap="truncate">{`branch · ${gs.branch}`}</Text>
-            <Box flexShrink={0}>
-              <Text dimColor>{syncLabel(gs)}</Text>
-            </Box>
-          </Box>
-          <Text wrap="truncate">
-            <Text color={unreviewedColor} bold>
-              {unreviewedLabel(gs)}
-            </Text>
-            <Text color={C.dim}> · </Text>
-            <Text color={gs.changed > 0 ? C.text : C.dim}>{changedLabel(gs)}</Text>
-          </Text>
+          {head}
+          {counts}
           {canUnfold(gs) ? (
             <Button
               key="git-unreviewed"
@@ -1450,11 +1513,22 @@ export const register: Register = (on, options) => {
     // ---- log: whatever rows the other panels leave, 4 to 8
     // The main box: its frame, title and effort line, then a row per usage window, the context and the
     // speed line. The Codex box: its frame and title, a row per window, and its note. The gap above the
-    // log is a row.
+    // log is a row. Two boxes to a row take the taller one's rows, not both: the branch box then has the
+    // sync and each count on a row, and the gate box wraps its summary and its buttons.
     const mainRows = 4 + mainMeters.length + (m.speed ? 1 : 0)
     const codexRows = cx ? 3 + codexMeters.length + (cx.note ? 1 : 0) : 0
     const gitRows = gs ? 4 + (canUnfold(gs) ? 1 : 0) + pathRows(gs, v.gitOpen) : 0
-    const used = 2 + (banner ? 1 : 0) + mainRows + 1 + codexRows + gitRows + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const gateRows = 6 + (v.gateOpen ? 5 : 0)
+    const inner = (pairing?.[1] ?? W) - PANEL_FRAME
+    const gateWrapped =
+      4 +
+      wrapRows([`■ ${s.rule} allowed`, `■ ${s.cleared} ${decider}`, ...(s.ask > 0 ? [`■ ${s.ask} pending`] : []), `✗ ${s.deny} denied`].map(cells), inner, 2) +
+      // A plain button with a hotkey is drawn `f: file 1`.
+      wrapRows(GATE_BUCKETS.map(b => 3 + cells(gateButtonLabel(b))), inner, 2) +
+      (v.gateOpen ? 5 : 0)
+    const mainBlock = isPaired('main', 'codex') ? Math.max(mainRows, codexRows) : mainRows + codexRows
+    const gitBlock = isPaired('git', 'gate') ? Math.max(gitRows + 2, gateWrapped) : gitRows + gateRows
+    const used = 2 + (banner ? 1 : 0) + mainBlock + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1482,17 +1556,17 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    const draw = (p: Panel, w: number) =>
+    const draw = (p: Panel, w: number, isNarrow = false) =>
       p === 'main'
-        ? mainPanel(w)
+        ? mainPanel(w, isNarrow)
         : p === 'codex'
-          ? codexPanel(w)
+          ? codexPanel(w, isNarrow)
           : p === 'git'
-            ? gitPanel(w)
+            ? gitPanel(w, isNarrow)
             : p === 'architect'
           ? architectPanel(w)
           : p === 'gate'
-            ? gatePanel(w)
+            ? gatePanel(w, isNarrow)
             : p === 'agents'
               ? agentsPanel(w)
               : p === 'loops'
@@ -1501,10 +1575,22 @@ export const register: Register = (on, options) => {
                   ? receiptPanel(w)
                   : logPanel(w)
 
-    // Panels with the flow between them; the agents panel draws its own rails.
-    const column = (ps: Panel[], w: number) => (
+    // Panels with the flow between them; the agents panel draws its own rails. A pair has no rail above
+    // it: two boxes side by side, stretched to the taller one's height.
+    const column = (ps: readonly PairRow[], w: number) => (
       <Box flexDirection="column" width={w}>
         {ps.map((p, i) => {
+          if (typeof p !== 'string') {
+            const [leftW, rightW] = pairWidths(w) ?? [w, w]
+            return (
+              <Box flexDirection="column">
+                <Box flexDirection="row" alignItems="stretch" columnGap={1} width={w}>
+                  {draw(p[0], leftW, true)}
+                  {draw(p[1], rightW, true)}
+                </Box>
+              </Box>
+            )
+          }
           const prev = ps[i - 1]
           const link =
             i === 0 || p === 'codex' || p === 'git' || p === 'agents' || prev === 'agents' || p === 'log' || p === 'loops' || prev === 'loops'
@@ -1648,7 +1734,7 @@ export const register: Register = (on, options) => {
         {panels.includes('log') ? logPanel(W) : null}
       </Box>
     ) : (
-      column(panels, W)
+      column(rows, W)
     )
 
     return (
