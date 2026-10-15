@@ -457,13 +457,13 @@ test('each rate-limit window shows the time to its reset where the main panel ha
   })
   for (const cols of [64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
-    expect(await ui.find({ text: /19% ↻3h10m/ })).toBeDefined()
-    expect(await ui.find({ text: /3% ↻4d2h/ })).toBeDefined()
+    expect(await ui.find({ text: /19% ⏱ 3h10m/ })).toBeDefined()
+    expect(await ui.find({ text: /3% ⏱ 4d2h/ })).toBeDefined()
     await ui.unmount()
   }
   const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
   expect(await narrow.find({ text: /19%/ })).toBeDefined()
-  expect(await narrow.find({ text: /↻/ })).toBeUndefined() // no room: the gauges stay whole
+  expect(await narrow.find({ text: /⏱ / })).toBeUndefined() // no room: the gauges stay whole
   await narrow.unmount()
 })
 

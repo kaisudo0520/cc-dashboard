@@ -1023,7 +1023,7 @@ export const register: Register = (on, options) => {
       const wv = windowView(wd, now)
       if (wv === null) return <Text dimColor>{`${label} —   `}</Text>
       const ug = gauge(wv.pct, 5)
-      const tail = wv.isStale ? ' 過期' : w >= 56 && wv.resetIn ? ` ↻${wv.resetIn}` : ''
+      const tail = wv.isStale ? ' 過期' : w >= 56 && wv.resetIn ? ` ⏱ ${wv.resetIn}` : ''
       return (
         <Text wrap="truncate">
           <Text dimColor>{`${label} `}</Text>
@@ -1077,7 +1077,7 @@ export const register: Register = (on, options) => {
                   <Text dimColor>{`${limitLabel(l.kind)} `}</Text>
                   <Text color={l.pct >= 80 ? C.warn : C.main}>{lg.on}</Text>
                   <Text color={C.faint}>{lg.off}</Text>
-                  <Text dimColor>{` ${Math.round(l.pct)}%${resetIn ? ` ↻${resetIn}` : ''}  `}</Text>
+                  <Text dimColor>{` ${Math.round(l.pct)}%${resetIn ? ` ⏱ ${resetIn}` : ''}  `}</Text>
                 </Text>
               )
             })}

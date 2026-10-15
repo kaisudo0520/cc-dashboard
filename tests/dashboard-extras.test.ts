@@ -217,8 +217,8 @@ test('the Codex panel shows its model, effort and both windows from the newest r
   for (const cols of [64, 120]) {
     const ui = await $.ui.mount(props(cols))
     expect(await ui.find({ text: 'Codex · gpt-6-sol · high' })).toBeDefined()
-    expect(await ui.find({ text: /13% ↻2h10m/ })).toBeDefined()
-    expect(await ui.find({ text: /40% ↻4d2h/ })).toBeDefined()
+    expect(await ui.find({ text: /13% ⏱ 2h10m/ })).toBeDefined()
+    expect(await ui.find({ text: /40% ⏱ 4d2h/ })).toBeDefined()
     expect(await ui.find({ text: /^ Codex$/ })).toBeDefined()
     await ui.unmount()
   }
@@ -356,7 +356,7 @@ test('Fable weekly usage shows in the main box, read through the engine\'s own a
   await showAndPump($, w, clock)
   expect(w.fetchCalls).toBe(1)
   const ui = await $.ui.mount(props(64))
-  expect(await ui.find({ text: /12% ↻2d2h/ })).toBeDefined()
+  expect(await ui.find({ text: /12% ⏱ 2d2h/ })).toBeDefined()
   expect(await ui.find({ text: 'Fable ' })).toBeDefined()
   await ui.unmount()
 })
