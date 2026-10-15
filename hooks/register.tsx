@@ -272,9 +272,10 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
 
 // ---------------------------------------------------------------- Codex usage
 // Codex's figures are only displayed (see ./lib/codex-quota): its model from the choice file, its
-// effort from its config, and its 5-hour and weekly windows from the newest rollout, read through
-// Windows PowerShell by full path. The rollout's path rides in the environment, never in the command
-// text. Without USERPROFILE or SystemRoot nothing is read and the panel stays hidden.
+// effort from its config, and its 5-hour and weekly windows from the most recently modified rollouts
+// (the latest event time among the top two wins; the next two are read only when those hold none),
+// read through Windows PowerShell by full path. The rollout's path rides in the environment, never in
+// the command text. Without USERPROFILE or SystemRoot nothing is read and the panel stays hidden.
 
 async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
   const home = await $.env.get('USERPROFILE')
@@ -283,6 +284,7 @@ async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
   return readCodexQuota(home, {
     readText: path => $.fs.read(path).catch(() => ''),
     list: dir => $.fs.list(dir),
+    stat: path => $.fs.stat(path).then(info => info.mtimeMs),
     queryRollout: path =>
       $.process
         .run([powershellExe(root), '-NoProfile', '-NonInteractive', '-Command', ROLLOUT_QUERY], { env: { ROLLOUT: path }, timeoutMs: 20_000 })

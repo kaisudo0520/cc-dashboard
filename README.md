@@ -46,12 +46,12 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 只讀、只顯示。需要 `USERPROFILE` 與 `SystemRoot`（Windows）；任一個沒有就不讀，Codex 面板不出現。
 
 - 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 的 `model_reasoning_effort`。
-- 視窗：`~/.codex/sessions/YYYY/MM/DD` 下最新的 rollout（最多讀 4 個，取事件時間 `timestamp` 最晚的讀數，而不是最晚開始的 rollout；沒有可解析時間的讀數視為最舊），每個 rollout 各跑一次指令，用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
+- 視窗：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
 - 新讀數缺某個視窗時保留舊值。每 120 秒一次。
 
 ## Fable 週額度
 
-`GET https://api.anthropic.com/api/oauth/usage`，由引擎的授權 handle 代為帶憑證（plugin 拿不到憑證，且只有 bearer 登入可用；不是 bearer 就不發請求、不顯示）。取 `limits[]` 中 `kind` 為 `weekly_scoped`、模型名稱含 Fable 的那筆。每 90 秒一次，失敗後等待時間加倍、最長 10 分鐘（或遵守較長的 `retry-after`），失敗時保留上次數字並把標籤改成 `Fable~`。
+`GET https://api.anthropic.com/api/oauth/usage`，由引擎的授權 handle 代為帶憑證（plugin 拿不到憑證，且只有 bearer 登入可用；不是 bearer 就不發請求、不顯示）。取 `limits[]` 中 `kind` 為 `weekly_scoped`、模型名稱含 Fable 的那筆。每 90 秒一次，失敗後等待時間加倍、最長 10 分鐘（或遵守較長的 `retry-after`），失敗時保留上次數字並把標籤改成 `Fable~`；該視窗的重設時間過了之後顯示 `~0%`。
 
 ## 等你回應
 

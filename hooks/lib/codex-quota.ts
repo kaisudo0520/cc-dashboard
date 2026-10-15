@@ -21,28 +21,69 @@ const TWO_DIGITS = /^\d{2}$/
 const ROLLOUT = /^rollout-[\w.-]+\.jsonl$/
 
 /** A directory listing, as `$.fs.list` gives it; the caller hands it in so this stays free of `$`. */
-export type ListDir = (path: string) => Promise<readonly { name: string; kind: string }[]>
+export type ListDir = (path: string) => Promise<readonly { name: string; kind: string; mtimeMs: number }[]>
 
-/** Up to `limit` of the newest rollout files under `root`/YYYY/MM/DD, newest first. */
-export const newestRollouts = async (list: ListDir, root: string, limit: number): Promise<string[]> => {
-  const found: string[] = []
+/** A file's own last-modified time, as `$.fs.stat` gives it; rejects when it cannot be read. */
+export type StatMtime = (path: string) => Promise<number>
+
+// A rollout is written to for as long as its session lives, so the one Codex is working in is the one
+// last modified, not the one started last (the folders and names say when it started). Looking for it
+// stays bounded: the newest ROLLOUT_DAYS_WALKED day folders (Codex makes a folder only for a day it
+// ran, so two weeks of use), and no further folder, month or year is listed once ROLLOUT_FILES_MAX
+// files are in hand (the day folder that crosses the mark is still taken whole).
+export const ROLLOUT_DAYS_WALKED = 14
+export const ROLLOUT_FILES_MAX = 200
+
+type Candidate = { path: string; mtimeMs: number }
+
+/**
+ * The rollout files under `root`/YYYY/MM/DD in the newest day folders, the most recently modified
+ * first (equal times: the later name, i.e. the later-started). Only plain files with the names Codex
+ * writes; a link, a folder or anything else is not listed. A folder whose listing fails counts as empty.
+ *
+ * A directory listing can show a file that is still held open for appending at an older time than it
+ * has (NTFS updates the directory entry late), so with `stat` each candidate's time is read from the
+ * file itself: one in-process call per candidate. Where that fails the listing's time stands.
+ */
+export const recentRollouts = async (list: ListDir, root: string, stat?: StatMtime): Promise<string[]> => {
+  const found: Candidate[] = []
+  let days = 0
+  const full = (): boolean => days >= ROLLOUT_DAYS_WALKED || found.length >= ROLLOUT_FILES_MAX
+  const entriesOf = (path: string) => list(path).catch(() => [])
   const subdirs = async (path: string, shape: RegExp): Promise<string[]> =>
-    descending((await list(path)).filter(entry => entry.kind === 'dir' && shape.test(entry.name)).map(entry => entry.name))
+    descending((await entriesOf(path)).filter(entry => entry.kind === 'dir' && shape.test(entry.name)).map(entry => entry.name))
 
-  for (const year of await subdirs(root, YEAR)) {
+  walk: for (const year of await subdirs(root, YEAR)) {
+    if (full()) break
     for (const month of await subdirs(`${root}/${year}`, TWO_DIGITS)) {
+      if (full()) break walk
       for (const day of await subdirs(`${root}/${year}/${month}`, TWO_DIGITS)) {
-        const dir = `${root}/${year}/${month}/${day}`
-        const names = (await list(dir)).map(entry => entry.name)
+        if (full()) break walk
 
-        found.push(...descending(names.filter(name => ROLLOUT.test(name))).map(name => `${dir}/${name}`))
-        if (found.length >= limit) return found.slice(0, limit)
+        const dir = `${root}/${year}/${month}/${day}`
+        days += 1
+        for (const entry of await entriesOf(dir)) {
+          if (entry.kind === 'file' && ROLLOUT.test(entry.name)) found.push({ path: `${dir}/${entry.name}`, mtimeMs: entry.mtimeMs })
+        }
       }
     }
   }
 
-  return found
+  return byRecency(stat === undefined ? found : await Promise.all(found.map(file => withOwnTime(file, stat))))
 }
+
+const withOwnTime = async (file: Candidate, stat: StatMtime): Promise<Candidate> => {
+  try {
+    const mtimeMs = await stat(file.path)
+
+    return Number.isFinite(mtimeMs) ? { ...file, mtimeMs } : file
+  } catch {
+    return file
+  }
+}
+
+const byRecency = (files: readonly Candidate[]): string[] =>
+  [...files].sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? 1 : a.path > b.path ? -1 : 0)).map(file => file.path)
 
 /** What the rules fall back to when no choice has been made. */
 export const DEFAULT_CODEX_MODEL = 'gpt-6-sol'
@@ -129,7 +170,11 @@ export const parseChoice = (json: string): string | undefined => {
 }
 
 const ROLLOUT_TAIL_LINES = 2000
-const ROLLOUTS_TRIED = 4
+// Rollouts are queried ROLLOUTS_PER_ROUND at a time, the most recently modified first; a second round
+// runs only when the first found no codex reading (a rollout of an exec that never reached a token_count),
+// and nothing beyond ROLLOUTS_TRIED is read. So a refresh runs 2 PowerShell queries, at most 4.
+const ROLLOUTS_PER_ROUND = 2
+export const ROLLOUTS_TRIED = 4
 const CHOICE_FILE = '.claude/model-choice.json'
 
 // The newest codex reading in a rollout's tail. The path rides in the
@@ -144,6 +189,8 @@ export type CodexIo = {
   /** A file's text; empty when it cannot be read. */
   readText: (path: string) => Promise<string>
   list: ListDir
+  /** A file's own modified time (it rejects when it cannot be read); the listing's time can be stale for an open file. */
+  stat: StatMtime
   /** What the rollout query prints for the rollout at `path`; empty when it fails. */
   queryRollout: (path: string) => Promise<string>
 }
@@ -152,8 +199,8 @@ export type CodexIo = {
  * Codex's model is the one the choice file pins its calls to (the rules' default
  * without one) and its reasoning effort comes from Codex's config: both are
  * only displayed. Its 5-hour and weekly windows come from the newest
- * token_count event in a rollout, the only place the CLI records them. Of the newest few rollouts
- * the reading with the latest event time is shown, not the one from the rollout started last.
+ * token_count event in a rollout, the only place the CLI records them. Of the most recently modified
+ * rollouts the reading with the latest event time is shown, not the one from the rollout started last.
  */
 export const readCodexQuota = async (home: string, io: CodexIo): Promise<CodexQuota> => {
   const root = `${home}/.codex`
@@ -161,17 +208,28 @@ export const readCodexQuota = async (home: string, io: CodexIo): Promise<CodexQu
   const effort = parseCodexEffort(await io.readText(`${root}/config.toml`))
   const base = { model, ...(effort === undefined ? {} : { effort }) }
 
-  // The newest-started rollout may be idle while an older, resumed one is where Codex is working:
-  // every candidate is read (at most ROLLOUTS_TRIED, one query each) and the latest event wins; on a
-  // tie the one listed first, the newer-started, stays.
-  const paths = await newestRollouts(io.list, `${root}/sessions`, ROLLOUTS_TRIED).catch(() => [])
-  const readings = await Promise.all(paths.map(async path => parseCodexReading(await io.queryRollout(path))))
-  const latest = readings.reduce<CodexReading | undefined>(
-    (best, reading) => (reading !== undefined && (best === undefined || reading.atMs > best.atMs) ? reading : best),
-    undefined,
-  )
-
-  if (latest !== undefined) return { ...base, ...latest.limits }
+  const paths = (await recentRollouts(io.list, `${root}/sessions`, io.stat).catch(() => [])).slice(0, ROLLOUTS_TRIED)
+  for (let from = 0; from < paths.length; from += ROLLOUTS_PER_ROUND) {
+    const latest = latestOf(await Promise.all(paths.slice(from, from + ROLLOUTS_PER_ROUND).map(path => readingOf(io, path))))
+    if (latest !== undefined) return { ...base, ...latest.limits }
+  }
 
   return { ...base, note: 'no usage recorded yet' }
 }
+
+// A query that fails is a rollout with no reading: it must not take the others' readings with it.
+const readingOf = async (io: CodexIo, path: string): Promise<CodexReading | undefined> => {
+  try {
+    return parseCodexReading(await io.queryRollout(path))
+  } catch {
+    return undefined
+  }
+}
+
+// The latest event wins. On a tie the earlier one in `readings` stays: they come most recently
+// modified first, so that is the rollout modified last.
+const latestOf = (readings: readonly (CodexReading | undefined)[]): CodexReading | undefined =>
+  readings.reduce<CodexReading | undefined>(
+    (best, reading) => (reading !== undefined && (best === undefined || reading.atMs > best.atMs) ? reading : best),
+    undefined,
+  )
