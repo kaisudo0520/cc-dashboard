@@ -91,7 +91,7 @@ import {
 } from './core'
 import type { ColumnRow, Config, Meter, Panel, PairRow } from './core'
 import { describeCodex } from './lib/codex'
-import { ROLLOUT_QUERY, readCodexQuota } from './lib/codex-quota'
+import { ROLLOUT_QUERY, mergeCodex, readCodexQuota } from './lib/codex-quota'
 import { FABLE_POLL_MS, fableFromUsage, nextFableDelay } from './lib/fable'
 import { backgroundIdOf, parseNotifications } from './lib/notify'
 import { serial } from './lib/serial'
@@ -100,7 +100,7 @@ import { bannerText, isQuestionTool, markPath, markText, readWaits, sameWaits } 
 import { isPersonPrompt, isReviewCall, isReviewPrompt, snapOf } from './lib/git'
 import { GIT_TIMEOUT_MS, readTree } from './lib/git-tree'
 import type { GitRun, Inspect, Tree } from './lib/git-tree'
-import { plain } from './lib/plain'
+import { ago, plain } from './lib/plain'
 import { readReviewed, recordReviewed } from './lib/review-store'
 import type { ReviewStore } from './lib/review-store'
 import { powershellExe, tasklistExe } from './lib/system'
@@ -287,10 +287,11 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
 // read through Windows PowerShell by full path. The rollout's path rides in the environment, never in
 // the command text. Without USERPROFILE or SystemRoot nothing is read and the panel stays hidden.
 
-async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
+async function readCodex($: EngineInterface, askServer: boolean): Promise<CodexQuota | null> {
   const home = await $.env.get('USERPROFILE')
   const root = await $.env.get('SystemRoot')
   if (home === undefined || root === undefined) return null
+  const nowMs = await $.clock.now()
   return readCodexQuota(home, {
     readText: path => $.fs.read(path).catch(() => ''),
     list: dir => $.fs.list(dir),
@@ -300,15 +301,26 @@ async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
         .run([powershellExe(root), '-NoProfile', '-NonInteractive', '-Command', ROLLOUT_QUERY], { env: { ROLLOUT: path }, timeoutMs: 20_000 })
         .then(done => done.stdout, () => ''),
     fetch: (url, headers) => $.http.fetch(url, { headers }),
-  })
+  }, { askServer, nowMs })
 }
 
-// A reading without a window keeps the last figure for it: the pane shows it as 0%, marked stale, past its reset.
-async function refreshCodex($: EngineInterface) {
-  const reading = await readCodex($)
-  await update($, codex, old =>
-    reading === null ? null : { ...reading, fiveHour: reading.fiveHour ?? old?.fiveHour, weekly: reading.weekly ?? old?.weekly },
-  )
+// The schedule reads the rollouts only, with no request; the server is asked only when the person
+// presses ↻ (or runs /dashboard refresh). The newer of the two readings is shown (see mergeCodex).
+async function refreshCodex($: EngineInterface, askServer = false) {
+  const reading = await readCodex($, askServer)
+  await update($, codex, old => (reading === null ? null : mergeCodex(old, reading)))
+}
+
+// ↻ on the Codex box: asks the server now, unless a read is already under way; the schedule starts over.
+async function askCodex($: EngineInterface) {
+  if (busy.has('codex')) return
+  busy.add('codex')
+  try {
+    await refreshCodex($, true).catch(swallow)
+    dueAt.codex = (await $.clock.now()) + 300_000
+  } finally {
+    busy.delete('codex')
+  }
 }
 
 // ---------------------------------------------------------------- branch (git)
@@ -634,8 +646,8 @@ export const register: Register = (on, options) => {
     if (verb === 'refresh') {
       // Read now, whether or not the pane shows; the schedules start over from here. Fable keeps its own.
       sessionsAt = 0
-      await Promise.all((['codex', 'git', 'others'] as const).filter(src => !busy.has(src)).map(src => runSource($, src)))
-      return { text: 'Read Codex usage, the branch and the other sessions waiting on you again.' }
+      await Promise.all([askCodex($), ...(['git', 'others'] as const).filter(src => !busy.has(src)).map(src => runSource($, src))])
+      return { text: 'Asked the server for Codex usage, and read the branch and the other sessions waiting on you again.' }
     }
     if (verb === 'layout') {
       const layout: Layout | null = arg === 'compact' || arg === 'wide' || arg === 'auto' || arg === 'mini' ? arg : null
@@ -647,7 +659,7 @@ export const register: Register = (on, options) => {
     const opened = await openPane($, cfg.dockPercent)
     if (!opened.isPlaced) return { text: `Dashboard is not shown yet: ${opened.reason}` }
     void pumpPolls($).catch(swallow)
-    return { text: 'Dashboard opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows, u lists the unreviewed files.' }
+    return { text: 'Dashboard opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows, u lists the unreviewed files, r asks the server for Codex usage.' }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
@@ -1441,11 +1453,16 @@ export const register: Register = (on, options) => {
             <Text color={C.codex} bold wrap="truncate">
               {plain(`Codex · ${cx.model ?? '—'}${cx.effort ? ` · ${cx.effort}` : ''}`)}
             </Text>
-            {isNarrow ? null : (
-              <Box flexShrink={0}>
-                <Text dimColor>quota · used</Text>
-              </Box>
-            )}
+            <Box flexShrink={0} columnGap={2}>
+              {isNarrow ? null : <Text dimColor>quota · used</Text>}
+              <Button
+                key="codex-refresh"
+                plain
+                hotkey="r"
+                label={cx.serverAtMs === undefined ? '↻' : `↻ ${ago(cx.serverAtMs, now)}`}
+                onPress={() => void askCodex($).catch(swallow)}
+              />
+            </Box>
           </Box>
           {codexMeters.map((row, i) => meterRow(`codex-${i}`, row, meterLayout(codexMeters, w), C.codex))}
           {cx.note ? (

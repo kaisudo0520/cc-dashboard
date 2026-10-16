@@ -666,3 +666,33 @@ test('when the server will not answer, Codex usage falls back to the newest roll
   expect(await ui.find({ text: /62%/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('the schedule never asks the server; ↻ (hotkey r) on the Codex box does, and says when it last did', async ($, on) => {
+  const token = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.c2lnbmF0dXJlMTIz'
+  const { w, clock } = engine(on, {
+    rollout: codexLine(62, inSeconds(HOUR_MS), 30, inSeconds(24 * HOUR_MS)),
+    files: { [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { access_token: token } }) },
+    codexUsage: JSON.stringify({ rate_limit: { primary_window: { used_percent: 8, limit_window_seconds: 18000, reset_at: inSeconds(2 * HOUR_MS) } } }),
+  })
+  await $.session.start({ cwd: '/repo' } as never)
+  w.shown = true
+  await clock.advance(2_000)
+  await new Promise(done => setTimeout(done, 20))
+  await clock.advance(300_000)
+  await new Promise(done => setTimeout(done, 20))
+  expect(w.codexFetches.length).toBe(0)
+  expect(w.processCalls.length > 0).toBe(true)
+  const before = await $.ui.mount(props(64))
+  const button = await before.find({ key: 'codex-refresh' })
+  expect([button?.props.label, button?.props.hotkey]).toEqual(['↻', 'r'])
+  expect(await before.find({ text: /62%/ })).toBeDefined()
+  await before.press({ key: 'codex-refresh' })
+  await new Promise(done => setTimeout(done, 20))
+  await before.unmount()
+  expect(w.codexFetches.length).toBe(1)
+  await clock.advance(3 * 60_000)
+  const after = await $.ui.mount(props(64))
+  expect((await after.find({ key: 'codex-refresh' }))?.props.label).toBe('↻ 3m ago')
+  expect(await after.find({ text: /^ +8%$/ })).toBeDefined()
+  await after.unmount()
+})

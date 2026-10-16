@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { readCodexQuota } from '../hooks/lib/codex-quota'
+import { mergeCodex, readCodexQuota } from '../hooks/lib/codex-quota'
 import type { CodexIo } from '../hooks/lib/codex-quota'
 import { CODEX_USAGE_URL, parseCodexAuth, parseCodexUsage, usageHeaders } from '../hooks/lib/codex-usage'
 
@@ -89,11 +89,19 @@ const io = (over: Partial<CodexIo> & { files?: Record<string, string> } = {}): C
   }
 }
 
-test('the server figures win when the login can ask for them, and no rollout is read', async () => {
+const ASK = { askServer: true, nowMs: 5_000 }
+
+test('asked to, the server figures win when the login allows, dated by the ask, and no rollout is read', async () => {
   const calls: { url: string; headers: Record<string, string> }[] = []
   const at = io({ fetch: async (url, headers) => (calls.push({ url, headers }), { ok: true, text: USAGE }) })
-  const quota = await readCodexQuota('/h', at)
-  expect(quota).toEqual({ model: 'gpt-6-sol', fiveHour: { usedPercent: 8, resetsAtMs: 1791132451000 }, weekly: { usedPercent: 41, resetsAtMs: 1791600000000 } })
+  const quota = await readCodexQuota('/h', at, ASK)
+  expect(quota).toEqual({
+    model: 'gpt-6-sol',
+    fiveHour: { usedPercent: 8, resetsAtMs: 1791132451000 },
+    weekly: { usedPercent: 41, resetsAtMs: 1791600000000 },
+    readAtMs: 5_000,
+    serverAtMs: 5_000,
+  })
   expect(calls.map(c => c.url)).toEqual([CODEX_USAGE_URL])
   expect(calls[0]?.headers.Authorization).toBe(`Bearer ${TOKEN}`)
   expect(at.asked).toEqual([])
@@ -110,7 +118,9 @@ test('a refused, failed or unreadable answer falls back to the rollouts', async 
     },
   ]) {
     const at = io({ fetch })
-    expect((await readCodexQuota('/h', at)).fiveHour?.usedPercent).toBe(62)
+    const quota = await readCodexQuota('/h', at, ASK)
+    expect(quota.fiveHour?.usedPercent).toBe(62)
+    expect(quota.serverAtMs).toBeUndefined()
     expect(at.asked.length).toBe(1)
   }
 })
@@ -118,7 +128,34 @@ test('a refused, failed or unreadable answer falls back to the rollouts', async 
 test('without a ChatGPT login, or with no way to fetch, the server is not asked', async () => {
   let asked = 0
   const fetch = async () => (asked++, { ok: true, text: USAGE })
-  expect((await readCodexQuota('/h', io({ fetch, files: { '/h/.codex/auth.json': '{"OPENAI_API_KEY":"sk-x"}' } }))).fiveHour?.usedPercent).toBe(62)
+  expect((await readCodexQuota('/h', io({ fetch, files: { '/h/.codex/auth.json': '{"OPENAI_API_KEY":"sk-x"}' } }), ASK)).fiveHour?.usedPercent).toBe(62)
   expect(asked).toBe(0)
-  expect((await readCodexQuota('/h', io())).fiveHour?.usedPercent).toBe(62)
+  expect((await readCodexQuota('/h', io(), ASK)).fiveHour?.usedPercent).toBe(62)
+})
+
+test('not asked to, the server is never asked, whatever the login', async () => {
+  let asked = 0
+  const at = io({ fetch: async () => (asked++, { ok: true, text: USAGE }) })
+  expect((await readCodexQuota('/h', at)).fiveHour?.usedPercent).toBe(62)
+  expect((await readCodexQuota('/h', at, { nowMs: 9 })).fiveHour?.usedPercent).toBe(62)
+  expect(asked).toBe(0)
+})
+
+test('mergeCodex shows the newer reading, keeps a window only the other has, and remembers the last server answer', () => {
+  const server = { model: 'm', fiveHour: { usedPercent: 8 }, weekly: { usedPercent: 41 }, readAtMs: 100, serverAtMs: 100 }
+  // An older rollout at the next poll does not undo what the server said.
+  expect(mergeCodex(server, { model: 'm', fiveHour: { usedPercent: 62 }, readAtMs: 50 })).toEqual(server)
+  // Codex used here after the ask: the newer rollout shows through; the server's time is kept for ↻.
+  expect(mergeCodex(server, { model: 'm2', fiveHour: { usedPercent: 12 }, readAtMs: 150 })).toEqual({
+    model: 'm2',
+    fiveHour: { usedPercent: 12 },
+    weekly: { usedPercent: 41 },
+    readAtMs: 150,
+    serverAtMs: 100,
+  })
+  // A reading of unknown time is the oldest; a first reading is taken as it is.
+  expect(mergeCodex(server, { model: 'm', fiveHour: { usedPercent: 70 } }).fiveHour?.usedPercent).toBe(8)
+  expect(mergeCodex(null, { model: 'm', note: 'no usage recorded yet' })).toEqual({ model: 'm', note: 'no usage recorded yet' })
+  // With figures in hand, a later "no usage" says nothing.
+  expect(mergeCodex(server, { model: 'm', note: 'no usage recorded yet' }).note).toBeUndefined()
 })
