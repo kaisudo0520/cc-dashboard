@@ -1,145 +1,150 @@
 # cc-dashboard
 
-**繁體中文** · [English](README.en.md)
+**English** · [繁體中文](README.zh-TW.md)
 
-Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的任務控制台。只顯示真實的 session 事件與讀數，不做假數字。
+A Claude Code mod that draws a live mission-control pane beside the transcript (or above the prompt). It shows only real session events and readings: no made-up numbers.
 
-以 [Flightdeck](https://github.com/scasella/claude-flightdeck)（Stephen Casella，MIT）為基礎修改：版面、面板、互動與英文標籤沿用 Flightdeck，另外加上：
+Built on [Flightdeck](https://github.com/scasella/claude-flightdeck) (Stephen Casella, MIT). The layouts, panels, interactions and English labels come from Flightdeck. cc-dashboard adds:
 
-- **Codex 額度**面板：5 小時與每週用量；平常只讀本機檔案，按 `↻` 才向伺服器查詢最新數字。
-- **分支**面板：分支、同步狀態、**多少檔案未審、多少檔案更新**。
-- 主模型框裡的 **Fable 週額度**。
-- **其他 session 等你回應**的紅字提醒（本 session 也會寫自己的等待標記）。
-- 把 **`codex exec` 執行當成子代理**卡片顯示（不帶 Codex session id）。
-- 主模型框下方的**橘色流向線**：主 session 工作時流動，與子代理的線一致。
-- 並排版面、Context 單獨一行、側欄寬度跟著終端縮放。
+- A **Codex usage** panel: 5-hour and weekly usage. It normally reads local files only; the server is asked for fresh figures only when you press `↻`.
+- A **branch** panel: branch, sync state, and **how many files are unreviewed and how many changed**.
+- **Fable weekly usage** in the main box.
+- A red **"waiting on you"** line when another Claude Code session needs you (this session also writes its own wait mark).
+- **`codex exec` runs shown as subagent cards** (no Codex session id).
+- An **orange flow line** under the main box: it runs while the main session works, matching the subagents' line.
+- Paired layout, a context line of its own, and a dock width that follows the terminal.
 
-## 面板
+## Panels
 
-| 面板 | 顯示 | 來源 |
+| Panel | Shows | From |
 | :- | :- | :- |
-| **等你回應**（標頭下一行紅字） | 只在「另一個仍在執行的 Claude Code session 正在等你」時出現：`! waiting on you: <session 名稱> <permission／question> <等待時間，如 3m ago>`，多個時加 ` · +<n> more`（等最久的在前）。沒人在等就整行不存在 | 見下方「等你回應」 |
-| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊。框的正下方有一條**橘色流向線**（寬度與框相同）：主迴圈工作時有圓點流動，閒置時是靜止的暗線；與 Codex 框並排時只畫在主模型框那一側；`motion: off` 時改為靜止的線。上下文量表 `Context`（`█░` 長條、已用 %、`116k/200k`、壓縮次數 ⟲）不在框內：它是主模型框（旁邊有 Codex 框時，是它們）與橘線之下的單獨一行，沒有框線，約占所在欄寬度的一半、靠左對齊（寬版時是左欄，其餘是整個窗格），下方空一行；已填滿的長條與百分比同一個顏色，未滿 50% 綠、50–79% 黃、80% 起紅（色彩跟著所選調色盤），底軌為淡色；`panels` 沒有 `main` 時不顯示，讀不到上下文時也不顯示 | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
-| **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`）。標題右側的 `↻`（熱鍵 `r`）按下才向伺服器查詢最新數字，旁邊顯示上次查詢是多久以前（`↻ 3m ago`） | 見下方「Codex 額度」 |
-| **分支** | `🔀 <分支名>`、`↔ <upstream> ↑ahead ↓behind`（沒有 upstream 顯示 `no upstream`）；**`unreviewed N files · changed M files`**。全部審過顯示 `✓ unreviewed 0`，無法判斷時顯示 `unreviewed ?`（絕不顯示成 0）。有未審檔案時 `u` 展開清單（最多 8 行，其餘以 `… N more` 計） | 見下方「分支」 |
-| **顧問** | 諮詢時間軸、是否正在諮詢、上次耗時；推測的時機（`before a plan`／`error repeats`／`before done`，標 `(inferred)`）；子代理顧問建議的第一行 | 符合樣式的 agent 類型，或 assistant 列中的 server tool |
-| **權限** | 每次權限檢查一格：綠＝規則允許、藍＝分類器或你允許後執行、黃＝待決、紅 ✗＝拒絕，子代理內的較暗。總計，與依工具類別（`f` file／`s` shell／`o` other）展開最近 5 筆（憑證遮蔽） | `tool.check`，由其後的 `tool.call` 結算 |
-| **子代理** | 放得下時並排卡片：任務、類型、模型（與主模型相同時省略）與強度（`high`；數字強度照數字顯示；沒有強度就不顯示）、ctx 與輸出 tokens、步數、計時、紅色 `max_tokens`；放不下時改為同一時間軸的泳道。`1`–`6` 展開：完整任務、模型與強度、最近 3 個工具呼叫、回答開頭。**`codex exec` 也是一張卡片**：類型 `Codex`、模型與強度（取自 Codex 面板讀到的設定）、任務為用途（`Codex plan draft`／`Codex review`／`Codex resume`／`Codex`，加上呼叫的 description），計入 running，不顯示 Codex session id | `agent.spawn`、`turn.step`、`tool.call`、`turn.complete`；Codex 見下方 |
-| **其他迴圈** | 沒有卡片認領的模型迴圈：workflow agent、壓縮、記憶分支 | 沒有卡片的 `turn.step` id |
-| **回合收據** | 進行中的回合或上一回合：耗時、子代理數、編輯數、錯誤數 | `turn.start`、`turn.complete` |
-| **工作紀錄** | 提示、啟動、完成、諮詢、編輯、錯誤與拒絕；檢視某子代理 transcript 時只列它的 | 以上全部 |
+| **Waiting on you** (red line under the header) | Only when *another* running Claude Code session is waiting on you: `! waiting on you: <session name> <permission/question> <time, e.g. 3m ago>`, with ` · +<n> more` when several (longest wait first). Absent, and taking no row, when nobody waits | See "Waiting on you" below |
+| **Main** | Model, effort, permission mode, request count. Claude's first two usage windows (`5h`, `7d`) and **Fable weekly usage** get a row each: a stretched `━─` bar, percent used, and the time to reset (⏱). Past its reset a window counts as restarted and reads `~0%` and `stale` until a new reading arrives; a failed Fable refresh labels it `Fable~`. Bars in one box share a width and line up. Right under the box is an **orange flow line** as wide as the box: packets run while the main loop works, a still dim line otherwise; two boxes to a row put it under the main box's side only; `motion: off` keeps it still. The `Context` meter (`█░` bar, percent used, `116k/200k`, compactions ⟲) is not in the box: it is a frameless line of its own under the main box (or the pair) and the orange line, about half the column wide and left-aligned (the left column in the wide layout, the whole pane otherwise), with a blank row below it. The filled bar and the percent share one colour: green under 50%, yellow from 50%, red from 80% (following the chosen palette); the track is faint. Not drawn when `panels` has no `main`, nor while no context reading exists | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()`; Fable below |
+| **Codex** | `Codex · <model> · <effort>`, then `5h` and `weekly` windows, a row each: a percent-used bar and the time to reset. A window past its reset counts as restarted (Codex only opens a new window at its first request after the reset) and reads `~0%` with `stale` until a new reading arrives. When no figures can be read, the reason shows (e.g. `no usage recorded yet`). The `↻` button at the right of the title (hotkey `r`) asks the server for fresh figures only when pressed, and says how long ago it last did (`↻ 3m ago`) | See "Codex usage" below |
+| **Branch** | `🔀 <branch>`, `↔ <upstream> ↑ahead ↓behind` (`no upstream` without one), and **`unreviewed N files · changed M files`**. All reviewed reads `✓ unreviewed 0`; when it cannot be known it reads `unreviewed ?`, never 0. With unreviewed files, `u` unfolds the list (up to 8 rows, the rest counted as `… N more`) | See "Branch" below |
+| **Architect** | A timeline of consults, whether one is running, how long the last took; the inferred moment of each (`before a plan` / `error repeats` / `before done`, marked `(inferred)`); the first line of a subagent architect's advice | An agent type that matches the pattern, or a matching server tool in the assistant's rows |
+| **Gate** | One cell per permission check: green allowed by a rule, blue decided by the classifier or by you and then run, amber pending, red ✗ denied; checks made inside a subagent are dimmer. Totals, and a drill-down per tool family (`f` file / `s` shell / `o` other) of the last 5 checks, credentials masked | `tool.check`, settled by the `tool.call` around it |
+| **Agents** | Cards side by side while they fit: task, type, model (left out when it matches the main loop's) and effort (`high`; a numeric effort as the number; none, none shown), ctx and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis. `1`–`6` expand: the full task, model and effort, the last 3 tool calls, the start of the answer. **A `codex exec` is a card too**: type `Codex`, the model and effort the Codex panel read from its config, the task its purpose (`Codex plan draft` / `Codex review` / `Codex resume` / `Codex`, with the call's description), counted as running; no Codex session id is shown | `agent.spawn`, `turn.step`, `tool.call`, `turn.complete`; Codex below |
+| **Other loops** | Model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
+| **Receipt** | The running turn, or the last one: duration, agents, edits, errors | `turn.start`, `turn.complete` |
+| **Log** | Prompts, spawns, completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | All of the above |
 
-沒東西可顯示的面板不占空間：沒有子代理就沒有子代理面板，不在 git repository 裡就沒有分支面板，讀不到 Codex 就沒有 Codex 面板。寬版（dock 且 110 欄以上）左欄為主模型、Codex、顧問、權限，右欄為分支、子代理、其他迴圈、回合收據，工作紀錄在最下方全寬。單欄且版面為 `auto`（窗格窄於 110 欄）時，窗格達 70 欄（dock 為終端 40% 時，約 180 欄的終端）起，兩組面板並排成一列：主模型｜Codex、分支｜權限（權限移到顧問之上），其後依序是顧問、子代理、其他迴圈、回合收據、工作紀錄；並排的兩個框等高，較矮的那個向下拉長。其中一個沒有內容，或 `panels` 設定讓兩者不相鄰，另一個照舊占滿整列；`compact` 不並排，不到 70 欄則維持堆疊。並排時字樣改用較窄的寫法：主模型框的努力程度、模式與請求數併成一行 `▮▮▮▯ high · auto · 12 req`；Codex 框省略 `quota · used`；分支框把同步狀態、未審與更新檔案數各放一列；權限框的摘要與 f／s／o 按鈕會換行，不會截掉 `✗ N denied`。在輸入框上方（非全螢幕）時是最多 8 列的摘要：第一列是模型、上下文與 Claude 的 `5h 2% · 7d 3%`（來自 API 回應，session 的第一次回應之後才有），紅字提醒在第二行，Fable、Codex 與分支合成一行：`Fable 31%   Codex 5h 13% · weekly 40%   🔀 main unreviewed 2 files · changed 5 files`（這兩行出現時子代理少列幾個，總數不超過 8）。
+A panel with nothing to show takes no room: no subagents, no agents panel; outside a git repository, no branch panel; no readable Codex, no Codex panel.
 
-## 側欄（全螢幕）
+**Layouts.**
+- *Wide* (docked, 110 columns or more): the left column holds main, Codex, architect and gate; the right column holds branch, agents, other loops and receipt; the log runs full width at the bottom.
+- *Single column with the layout on `auto`* (a pane under 110 columns): from 70 columns (about a 180-column terminal at a 40% dock) two pairs share a row: main | Codex, then branch | gate (the gate moves above the architect). After them come architect, agents, other loops, receipt, log. The two boxes of a pair are the same height; the shorter one stretches. If one of the two has nothing to show, or `panels` leaves them apart, the other fills its row as before. `compact` never pairs, and below 70 columns the stacked layout is unchanged. Inside a pair the wording narrows: the main box's effort, mode and request count fold into `▮▮▮▯ high · auto · 12 req`; the Codex box drops `quota · used`; the branch box puts the sync state and each count on a row of their own; the gate's summary and buttons wrap, so `✗ N denied` is never cut.
+- *Inline above the prompt* (not fullscreen): a summary of at most 8 rows. The first row is the model, the context and Claude's `5h 2% · 7d 3%` (from the API response, available after the session's first reply); the red line is on the second; Fable, Codex and the branch share one row: `Fable 31%   Codex 5h 13% · weekly 40%   🔀 main unreviewed 2 files · changed 5 files`. While those rows show, fewer agent rows are listed so the total stays within 8.
 
-`/tui fullscreen`（或 `settings.json` 的 `"tui": "fullscreen"`，下次啟動生效）後，面板停靠在 transcript 右側，寬度為終端的 `dockPercent`%（預設 40%，扣掉邊框，最窄 40 欄），視窗縮放後約 2 秒內跟著調整。終端寬度只在終端機的面板繪製或執行 `/dashboard` 時讀得到，所以剛啟動時先用引擎預設寬度，第一次繪製後才換成比例寬度；附掛的 Desktop／手機畫面不影響。手動拖過的寬度優先（引擎規則）。全螢幕版面 110 欄起才停靠；session 開始時自動開啟（沒人要求）則要 144 欄，窄一點時用 `/dashboard` 開。
+## Dock (fullscreen)
 
-## 使用
+After `/tui fullscreen` (or `"tui": "fullscreen"` in `settings.json`, effective at the next start) the pane docks beside the transcript at `dockPercent`% of the terminal's width (default 40%, less the frame, at least 40 columns) and follows the terminal within about 2 seconds of a resize. The terminal's width is known only from a drawing of the terminal's own pane or from running `/dashboard`, so at first the dock keeps the engine's default width and takes its share after the first drawing; a Desktop or phone attached to the session does not affect it. A width you dragged the dock to wins (an engine rule). The fullscreen layout docks from 110 columns; opening on start (when nobody asked) needs 144, and below that `/dashboard` opens it.
+
+## Use
 
 ```
 claude --plugin-dir N:\projects\github\cc-dashboard
 ```
 
-| 指令 | 作用 |
+| Command | Does |
 | :- | :- |
-| `/dashboard` | 開啟面板 |
-| `/dashboard close` | 關閉 |
-| `/dashboard reset` | 清掉子代理、檢查、諮詢、紀錄與回合（額度、壓縮次數、Codex 與分支保留） |
-| `/dashboard refresh` | 向伺服器查詢 Codex 額度（同按 `↻`），並立刻重讀分支與其他 session 的等待（不論面板是否顯示；Fable 照自己的排程） |
-| `/dashboard layout auto\|compact\|wide\|mini` | 本 session 的版面 |
+| `/dashboard` | open the pane |
+| `/dashboard close` | close it |
+| `/dashboard reset` | clear agents, checks, consults, log and the turn (usage, compactions, Codex and branch stay) |
+| `/dashboard refresh` | ask the server for Codex usage (same as `↻`), and read the branch and the other sessions' waits again now (whether or not the pane shows; Fable keeps its own schedule) |
+| `/dashboard layout auto\|compact\|wide\|mini` | override the layout for this session |
 
-用 `ctrl+x tab` 聚焦面板後：`1`–`6` 展開子代理，`f` `s` `o` 展開權限明細，`u` 展開未審檔案清單，`r` 向伺服器查詢 Codex 額度。`/clear` 會連同對話重設面板（Codex 與分支不受影響）。
+With the pane focused (`ctrl+x tab`): `1`–`6` expand an agent card or lane, `f` `s` `o` open the gate's drill-down, `u` unfolds the unreviewed files, `r` asks the server for Codex usage. `/clear` resets the pane along with the conversation (Codex and branch are untouched).
 
-## Codex 額度
+## Codex usage
 
-只讀、只顯示。需要 `USERPROFILE` 與 `SystemRoot`（Windows）；任一個沒有就不讀，Codex 面板不出現。
+Read-only, display-only. It needs `USERPROFILE` and `SystemRoot` (Windows); without either nothing is read and the Codex panel does not appear.
 
-- 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 的 `model_reasoning_effort`。
-- 視窗，**按 `↻` 才問伺服器**：Codex 框標題右側的 `↻`（面板聚焦時熱鍵 `r`，或 `/dashboard refresh`）按下時，若 `~/.codex/auth.json` 裡有 ChatGPT 登入（`tokens.access_token`，以及 `tokens.account_id`），就向 `GET https://chatgpt.com/backend-api/wham/usage` 查詢，那是 Codex 自己的 `/status` 用的那個呼叫，header 與 Codex 相同（`Authorization: Bearer …`、`ChatGPT-Account-Id`、`User-Agent: codex-cli`）。它回傳帳號在伺服器端的 5 小時與每週已用 % 與重設時間，**不消耗額度**；在別台電腦或 ChatGPT 網頁上用掉的也算得到，沒呼叫 Codex 時數字照樣更新。token 只用在這一個請求，不寫進 state、不畫出來、不寫回 auth.json（過期時要等 Codex 下次執行自己更新；在那之前查詢會被拒絕，就改讀 rollout）。token 與 account id 只接受 JWT／id 會有的字元，避免被塞進額外的 header。這是**未公開的私有 API**：回應不是預期的格式、被拒絕、連不上，或用 API key 登入（沒有 ChatGPT token）時，一律退回下面讀 rollout 的方式。
-- 視窗，**平常讀 rollout**（定時讀取只讀本機檔案、不發任何請求；按 `↻` 但伺服器沒回答時也用這個）：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
-- 伺服器與 rollout 的讀數**取較新的顯示**（伺服器讀數以查詢當下為時間，rollout 以事件時間；沒有時間的讀數算最舊），所以按完 `↻` 後不會被較舊的 rollout 蓋掉，之後在本機用了 Codex 則由較新的 rollout 接手。`↻` 旁顯示上次伺服器回答是多久以前（`↻ 3m ago`）。新讀數缺某個視窗時保留舊值。rollout 每 5 分鐘讀一次，只在面板顯示時進行。
+- **Model and effort:** the model is the `codex` key of `~/.claude/model-choice.json` (the rules' default, `gpt-6-sol`, without one); the effort is `model_reasoning_effort` in `~/.codex/config.toml`.
+- **Windows, the server only when you press `↻`:** pressing `↻` on the Codex box's title (hotkey `r` with the pane focused, or `/dashboard refresh`), if `~/.codex/auth.json` holds a ChatGPT login (`tokens.access_token`, and `tokens.account_id`), sends `GET https://chatgpt.com/backend-api/wham/usage`. That is the call Codex's own `/status` makes, with the headers Codex sends (`Authorization: Bearer …`, `ChatGPT-Account-Id`, `User-Agent: codex-cli`). It answers the account's server-side 5-hour and weekly percent used and reset times and **spends none of the quota**; usage from another computer or Codex on the web counts, so the figures are current even if Codex was not called. The token is used for that one request only: never kept in state, never drawn, never written back to `auth.json` (when it has expired it waits for Codex's next run to refresh it, and until then the call is refused and the rollouts are read instead). Only the characters a JWT or an id holds are accepted, so nothing extra can be smuggled into a header. This is an **undocumented private API**: an answer of another shape, a refusal, no network, or an API-key login (no ChatGPT token) all fall back to the rollouts below.
+- **Windows, the rollouts normally** (the schedule reads local files only and sends no request; also used when you press `↻` and the server does not answer): from the newest 14 day folders of `~/.codex/sessions/YYYY/MM/DD` (no older folder once 200 files are listed; a folder that cannot be listed counts as empty), each candidate is ranked by its own last-modified time (asked of the file system one by one, not the listing's time, which can be stale; where that fails the listing's time stands). The 2 most recently modified rollouts are read (a long-lived older session keeps writing to its original file; the next 2, up to 4 in all, only when neither holds a codex reading), and the reading whose event `timestamp` is latest wins (a tie goes to the more recently modified; a reading with no parseable time counts as oldest). One command per rollout (usually 2 per refresh, at most 4), through `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` (a full path, not PATH), takes the lines containing `"limit_id":"codex"` from the last 2000 lines of the file. The rollout's path rides in the environment variable `ROLLOUT`, never in the command text. The 5-hour and weekly windows are told apart by their length.
+- **The newer reading is shown.** A server reading is dated by the ask, a rollout by its event time (a reading with no time counts as oldest), so after `↻` an older rollout does not overwrite it, and once you use Codex here the newer rollout takes over. The `↻` button says how long ago the server last answered (`↻ 3m ago`). A new reading that lacks a window keeps the old one. The rollouts are read every 5 minutes, only while the pane shows.
 
-## Fable 週額度
+## Fable weekly usage
 
-`GET https://api.anthropic.com/api/oauth/usage`，由引擎的授權 handle 代為帶憑證（plugin 拿不到憑證，且只有 bearer 登入可用；不是 bearer 就不發請求、不顯示）。取 `limits[]` 中 `kind` 為 `weekly_scoped`、模型名稱含 Fable 的那筆。每 90 秒一次，失敗後等待時間加倍、最長 10 分鐘（或遵守較長的 `retry-after`），失敗時保留上次數字並把標籤改成 `Fable~`；該視窗的重設時間過了之後顯示 `~0%`。
+`GET https://api.anthropic.com/api/oauth/usage`, authorised by the engine's own handle (the credential never reaches this plugin; only a bearer login can use the endpoint, and without one nothing is asked or shown). It takes the `limits[]` entry whose `kind` is `weekly_scoped` and whose model name contains Fable. Every 90 seconds; after a failure the wait doubles up to 10 minutes (or follows a longer `retry-after`), and the last figure stays with the label `Fable~`. Once the window's reset time has passed it reads `~0%`.
 
-## 等你回應
+## Waiting on you
 
-- **讀（其他 session）**：本機 session registry `~/.claude/sessions/<pid>.json`（只讀最新的 32 個、64 KB 以下、檔名為數字的一般檔案），加上行程表 `%SystemRoot%\System32\tasklist.exe /FO CSV /NH`（完整路徑，15 秒逾時），只算 pid 仍是 `claude`／`node` 的 session；再讀它們的標記檔 `~/.claude/mods-state/status-sidebar/waiting/<pid>.json`，檔內 `sessionId` 必須與 registry 相同（pid 被重用的舊檔不算）。標記約每 5 秒讀一次，registry 與 `tasklist` 約每 30 秒。任何一步讀不到就不顯示（不猜）。
-- **寫（本 session 自己的）**：同一個資料夾、與 status-sidebar 相同格式 `{"sessionId":…,"reason":"permission"｜"question"｜null,"sinceMs":…}`，所以兩邊的 session 互看得到。`classic.PermissionRequest` 寫 `permission`，`AskUserQuestion`／`ExitPlanMode` 開始時寫 `question`；該呼叫回傳、你輸入新的 prompt、主回合結束、session 結束時清除。事件驅動，面板沒開也會寫。
-- 權限等待只知道何時開始、要等該呼叫回傳才結束，所以是「可能」在等你。session 名稱經 `plain()` 去掉控制字元後才畫。
+- **Reading (other sessions):** the local session registry `~/.claude/sessions/<pid>.json` (only the newest 32 plain files with numeric names, 64 KB or smaller), plus the process table, `%SystemRoot%\System32\tasklist.exe /FO CSV /NH` (a full path, 15-second timeout); only sessions whose pid still runs as `claude` or `node` count. Then their mark files, `~/.claude/mods-state/status-sidebar/waiting/<pid>.json`, whose `sessionId` must equal the registry's (a stale file from a reused pid does not count). Marks are read about every 5 seconds, the registry and `tasklist` about every 30. Whenever a step cannot be read, nothing is shown: nothing is guessed.
+- **Writing (this session's own):** the same folder and the same format as status-sidebar, `{"sessionId":…,"reason":"permission"|"question"|null,"sinceMs":…}`, so sessions running either mod see each other. `classic.PermissionRequest` writes `permission`; `AskUserQuestion` / `ExitPlanMode` write `question` when they start. It clears when that call returns, when you type a new prompt, when the main turn ends, and when the session ends. Driven by events, so it is written whether or not the pane shows.
+- A permission wait is known to start and not to end until its call returns, hence "may be waiting on you". The session name is made plain (control characters removed) before it is drawn.
 
-## Codex 執行（子代理）
+## Codex runs (as subagents)
 
-主對話經 Bash 或 PowerShell 執行的 `codex exec`／`codex exec resume`（子代理的呼叫不算）。只在「指令位置」才算：引號內、註解、heredoc 本體、PowerShell here-string 裡提到的 `codex exec` 都不是執行（遮蔽與比對為單次掃描，只看前 64 KB）。用途依指令判斷：`resume` 為 `Codex resume`，`--sandbox read-only` 為 `Codex plan draft`，`workspace-write` 為 `Codex review`，其他為 `Codex`；卡片的模型取自 Codex 面板讀到的模型。
+`codex exec` / `codex exec resume` that the main conversation runs through Bash or PowerShell (a subagent's calls do not count). It counts only in command position: a `codex exec` inside quotes, a comment, a heredoc body or a PowerShell here-string is not a run (masking and matching are a single pass over the first 64 KB). The purpose comes from the command: `resume` is `Codex resume`, `--sandbox read-only` is `Codex plan draft`, `workspace-write` is `Codex review`, anything else is `Codex`; the card's model is the one the Codex panel read.
 
-- 前景執行：呼叫回傳時結束，`isError` 或被拒絕為失敗。
-- 轉成背景（結果帶 `backgroundTaskId`）：卡片持續執行中，由 `task-notification` 通知結束（只認 `<summary>` 之前的 `task-id`、`tool-use-id`、`status`；`failed`／`killed` 或非 0 結束碼為失敗）。通知不會讓本 mod 開任何檔案。
-- 每回合結束的 `classic.Stop` 核對：仍掛著的前景執行推斷為失敗，引擎清單裡已沒有的背景執行推斷為完成。
+- A foreground run ends when its call returns; an `isError` or a refusal is a failure.
+- A run moved to the background (the result carries `backgroundTaskId`) stays running until its `task-notification` ends it (only the `task-id`, `tool-use-id` and `status` before `<summary>` are read; `failed` / `killed` or a non-zero exit code is a failure). A notification never makes this mod open a file.
+- At each turn's `classic.Stop` it is checked against the engine's own list: a foreground run still open is inferred failed, a background run the list no longer holds is inferred done.
 
-## 分支
+## Branch
 
-只讀的 `git`，經 `$.process.run`（15 秒逾時），每一道都帶 `--no-optional-locks -c core.quotePath=false -c core.fsmonitor=false -c protocol.ext.allow=never` 與環境變數 `GIT_NO_LAZY_FETCH=1`：`rev-parse --show-toplevel`、`config`（列出 filter driver 並對 `status`／`hash-object` 全部關掉；partial clone 整個不讀；列不出來就不往下讀）、`status --ignore-submodules=all --porcelain=v2 --branch -z -uall`、`hash-object --no-filters --stdin-paths`（不帶 `-w`，不寫入物件）。符號連結與落在 repository 外的路徑不雜湊，永遠算未審。輸出被截斷視為失敗。每 30 秒一次，主回合結束後提前一次。
+Read-only `git`, through `$.process.run` (15-second timeout). Every call carries `--no-optional-locks -c core.quotePath=false -c core.fsmonitor=false -c protocol.ext.allow=never` and the environment variable `GIT_NO_LAZY_FETCH=1`: `rev-parse --show-toplevel`; `config` (lists the filter drivers, then switches every one off for `status` and `hash-object`; a partial clone is not read at all; if they cannot be listed nothing further is read); `status --ignore-submodules=all --porcelain=v2 --branch -z -uall`; and `hash-object --no-filters --stdin-paths` (no `-w`, so no object is written). A symbolic link, or a path that lands outside the repository, is not hashed and always counts as unreviewed. Output the engine cut short is a failure. Every 30 seconds, and once right after a main turn ends.
 
-- **更新**＝與 HEAD 不同的檔案數（含未追蹤）。
-- **未審**＝已更新、但內容與「最近一次審查所見」不同的檔案數。
-- 審查紀錄（本 plugin 唯一的寫入）：自己的 `$.store`，key `git-reviewed:<repository 根目錄>`，值為「路徑 → 內容雜湊」；最多保留最近 8 個 repository、每個 2000 個路徑（超過就存 `too-many-paths`，顯示 `unreviewed ?`）。只在這些時刻寫入：(1) `Skill` 工具呼叫的 skill 名稱含 `review`；(2) `Agent` 工具呼叫的 `subagent_type` 含 `review`——兩者都在呼叫開始時讀樹，呼叫未被拒絕、未回報錯誤才寫入；(3) 你自己輸入（`composer`／`bridge`／`sdk`）的 `/…review` 斜線指令，送出當下讀樹並寫入。
+- **Changed** = files that differ from HEAD (untracked included).
+- **Unreviewed** = changed files whose content differs from what the last review saw.
+- **The review record** (this plugin's only write): its own `$.store`, key `git-reviewed:<repository root>`, value "path → content hash"; only the 8 most recently written repositories are kept, 2000 paths each (past that it stores `too-many-paths` and the panel reads `unreviewed ?`). It is written only when: (1) a `Skill` call whose skill name contains `review`; (2) an `Agent` call whose `subagent_type` contains `review` (for both, the tree is read as the call begins and kept only if the call is not refused and does not fail); (3) a `/…review` slash command that you type yourself (`composer` / `bridge` / `sdk` origin), the tree read and recorded as it is sent.
 
-Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每 2 秒檢查哪個到期），面板關閉或在背景分頁時不發請求、不開任何程序。例外：為了知道自己標記檔的檔名，session 啟動時（或要寫標記而 pid 還不知道時）會查一次 registry 與 `tasklist`。
+Fable, Codex, git and the other sessions' waits are polled only while the pane shows (a pump looks every 2 seconds at which is due). A closed pane, or one in a background tab, sends no request and runs no process. The exception: to learn the file name of its own mark, the session reads the registry and `tasklist` once at start (or when a mark is to be written and the pid is not known yet).
 
-## 推測，不是量測
+## Inferred, not measured
 
-- 顧問的時機：`before a plan`＝本回合還沒有編輯，`error repeats`＝主迴圈連續 2 次以上錯誤，`before done`＝已有編輯。標 `(inferred)`，`moments: false` 可關掉。
-- server 端的顧問（如 `advisor`）內容是加密的：只能計次與計時。
-- 子代理的 ctx 是最近一次請求的完整輸入，不是費用。
+- The architect's moments: `before a plan` = no edit yet this turn, `error repeats` = 2 or more main-loop errors in a row, `before done` = edits were made. Marked `(inferred)`; `moments: false` turns them off.
+- A server-side architect (such as `advisor`) is encrypted: it can be counted and timed, not read.
+- An agent's ctx is its latest request's whole input, not a cost.
 
-## 設定
+## Configure
 
-`/config`，或 `settings.json` 的 `pluginConfigs["cc-dashboard"].options`：
+In `/config`, or under `pluginConfigs["cc-dashboard"].options` in `settings.json`:
 
-| 選項 | 預設 | 說明 |
+| Option | Default | Meaning |
 | :- | :- | :- |
-| `architectPattern` | `advisor\|architect` | 算作顧問的 agent 類型與 server tool（正規表示式） |
-| `matchDescriptions` | `false` | 也比對 agent 說明 |
-| `architectLabel` | `ARCHITECT` | 顧問的名稱 |
-| `gateLabel` | `GATE` | 權限面板的名稱 |
-| `panels` | `main,codex,git,architect,gate,agents,loops,receipt,log` | 顯示哪些面板、依序 |
-| `layout` | `auto` | `mini`、`compact`、`wide` 或 `auto` |
-| `dockPercent` | `40` | 全螢幕時側欄占終端寬度的百分比（20–80） |
-| `maxCards` | `3` | 並排卡片數上限（1–6） |
-| `motion` | `while-active` | `off` 讓連接線靜止 |
-| `moments` | `true` | 顯示推測的諮詢時機 |
-| `palette` | `theme` | `pastel` 為深色終端機的固定色 |
-| `openOnStart` | `true` | session 開始時開啟面板 |
-| `statusLine` | `true` | 在狀態列顯示上下文、子代理、諮詢與拒絕 |
+| `architectPattern` | `advisor\|architect` | case-insensitive regex for agent types and server tools that count as the architect |
+| `matchDescriptions` | `false` | also match agent descriptions |
+| `architectLabel` | `ARCHITECT` | the architect's name in the pane |
+| `gateLabel` | `GATE` | the permission panel's name |
+| `panels` | `main,codex,git,architect,gate,agents,loops,receipt,log` | which panels show, in order |
+| `layout` | `auto` | `mini`, `compact`, `wide`, or `auto` |
+| `dockPercent` | `40` | share of the terminal's width the docked pane takes in fullscreen (20–80) |
+| `maxCards` | `3` | agent cards side by side before swimlanes (1–6) |
+| `motion` | `while-active` | `off` keeps the connectors and the main line still |
+| `moments` | `true` | show the inferred consult moments |
+| `palette` | `theme` | `pastel` uses fixed colours tuned for dark terminals |
+| `openOnStart` | `true` | open the pane when a session starts |
+| `statusLine` | `true` | context, agents, consults and denials in the status line |
 
-## 結構
+## Structure
 
-| 檔案 | 內容 |
+| File | Holds |
 | :- | :- |
-| `hooks/register.tsx` | 事件 hook、狀態存取、Codex／git 的 I/O 與輪詢、每個面板的繪製（所有碰 `$` 的程式都在這裡） |
-| `hooks/core.ts` | 所有 reducer、格式化與版面規則（純函式），含 Codex 視窗與分支文字 |
-| `hooks/rail.tsx`、`hooks/elapsed.tsx` | surface 模組：動畫連接線（子代理、主模型的橘線）與計時器 |
-| `hooks/lib/codex-usage.ts` | Codex auth.json 的 ChatGPT 登入、用量端點的 header 與回應解析 |
-| `hooks/lib/codex-quota.ts` | Codex rollout、config、model-choice 的解析與走訪（收讀取函式，不碰 `$`） |
-| `hooks/lib/git.ts`、`git-tree.ts`、`git-filters.ts` | git status 解析、只讀 git 指令、filter 關閉、未審計算 |
-| `hooks/lib/review-store.ts` | 審查紀錄的讀寫與上限 |
-| `hooks/lib/fable.ts` | Fable 回應的解析與退避時間 |
-| `hooks/lib/sessions.ts`、`waiting.ts`、`serial.ts` | registry／tasklist 解析、等待標記的格式與提醒文字、依序寫入的佇列 |
-| `hooks/lib/codex.ts`、`shell-mask.ts`、`notify.ts` | 判斷 `codex exec` 與用途、遮掉 shell 裡不是程式碼的部分、背景任務通知 |
-| `hooks/lib/plain.ts`、`system.ts` | 外部字串去控制字元與「多久以前」（`3m ago`）、`tasklist`／PowerShell 完整路徑 |
-| `types/index.d.ts` | 狀態型別 |
-| `tests/` | 畫面與 hook：`dashboard.test.ts`（Flightdeck 原有面板、主模型流向線）、`dashboard-extras.test.ts`（Codex 額度與 `↻`、分支、審查、Fable、等你回應、Codex 卡片、摘要列、輪詢）、`pairs-pane.test.ts`／`pairs.test.ts`（並排版面）、`dock.test.ts`（側欄寬度）、`context-line.test.ts`、`palette.test.ts`；其餘是各 lib 的單元測試（`codex*`、`git*`、`review-store`、`fable`、`notify`、`sessions`、`waiting`、`shell-mask`、`serial`、`plain`、`system`） |
+| `hooks/register.tsx` | the event hooks, state access, the Codex and git I/O and polling, and the drawing of every panel (everything that touches `$` is here) |
+| `hooks/core.ts` | every reducer, formatter and layout rule as pure functions, including the Codex windows and the branch text |
+| `hooks/rail.tsx`, `hooks/elapsed.tsx` | surface modules: animated connectors (the subagents', and the main model's orange line) and live clocks |
+| `hooks/lib/codex-usage.ts` | the ChatGPT login in Codex's `auth.json`, the usage call's headers and its answer's parsing |
+| `hooks/lib/codex-quota.ts` | parsing and walking Codex's rollouts, config and model choice (takes its reads as functions, never touches `$`) |
+| `hooks/lib/git.ts`, `git-tree.ts`, `git-filters.ts` | git status parsing, the read-only git commands, switching filters off, the unreviewed count |
+| `hooks/lib/review-store.ts` | reading and writing the review record, and its caps |
+| `hooks/lib/fable.ts` | parsing Fable's answer and the back-off |
+| `hooks/lib/sessions.ts`, `waiting.ts`, `serial.ts` | registry / tasklist parsing, the wait mark's format and the banner's text, a queue that runs writes one after another |
+| `hooks/lib/codex.ts`, `shell-mask.ts`, `notify.ts` | recognising `codex exec` and its purpose, masking what is not code in a shell command, background-task notifications |
+| `hooks/lib/plain.ts`, `system.ts` | making outside strings plain and "how long ago" (`3m ago`), full paths of `tasklist` / PowerShell |
+| `types/index.d.ts` | the state's types |
+| `tests/` | Drawing and hooks: `dashboard.test.ts` (Flightdeck's own panels, the main flow line), `dashboard-extras.test.ts` (Codex usage and `↻`, branch, review, Fable, waiting on you, Codex cards, the summary rows, polling), `pairs-pane.test.ts` / `pairs.test.ts` (the paired layout), `dock.test.ts` (dock width), `context-line.test.ts`, `palette.test.ts`; the rest are unit tests of each lib (`codex*`, `git*`, `review-store`, `fable`, `notify`, `sessions`, `waiting`, `shell-mask`, `serial`, `plain`, `system`) |
 
-## 測試
+## Test
 
 ```
 claude plugin test
 claude plugin validate .
-npx -p typescript tsc -p .   # 第一次以 --plugin-dir 互動式載入後（會寫出 .claude-plugin/types/）
+npx -p typescript tsc -p .   # after a first interactive load with --plugin-dir, which writes .claude-plugin/types/
 ```
 
-## 授權
+## License
 
-MIT，見 [LICENSE](LICENSE)。Flightdeck © Stephen Casella。
+MIT, see [LICENSE](LICENSE). Flightdeck © Stephen Casella.
