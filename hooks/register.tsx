@@ -91,7 +91,7 @@ import {
 } from './core'
 import type { ColumnRow, Config, Meter, Panel, PairRow } from './core'
 import { describeCodex } from './lib/codex'
-import { ROLLOUT_QUERY, readCodexQuota } from './lib/codex-quota'
+import { ROLLOUT_QUERY, mergeCodex, readCodexQuota } from './lib/codex-quota'
 import { FABLE_POLL_MS, fableFromUsage, nextFableDelay } from './lib/fable'
 import { backgroundIdOf, parseNotifications } from './lib/notify'
 import { serial } from './lib/serial'
@@ -100,7 +100,7 @@ import { bannerText, isQuestionTool, markPath, markText, readWaits, sameWaits } 
 import { isPersonPrompt, isReviewCall, isReviewPrompt, snapOf } from './lib/git'
 import { GIT_TIMEOUT_MS, readTree } from './lib/git-tree'
 import type { GitRun, Inspect, Tree } from './lib/git-tree'
-import { plain } from './lib/plain'
+import { ago, plain } from './lib/plain'
 import { readReviewed, recordReviewed } from './lib/review-store'
 import type { ReviewStore } from './lib/review-store'
 import { powershellExe, tasklistExe } from './lib/system'
@@ -281,15 +281,17 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
 
 // ---------------------------------------------------------------- Codex usage
 // Codex's figures are only displayed (see ./lib/codex-quota): its model from the choice file, its
-// effort from its config, and its 5-hour and weekly windows from the most recently modified rollouts
+// effort from its config, and its 5-hour and weekly windows from the ChatGPT backend's usage call
+// (signed with Codex's own ChatGPT login; spends none of the quota), else from the most recently modified rollouts
 // (the latest event time among the top two wins; the next two are read only when those hold none),
 // read through Windows PowerShell by full path. The rollout's path rides in the environment, never in
 // the command text. Without USERPROFILE or SystemRoot nothing is read and the panel stays hidden.
 
-async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
+async function readCodex($: EngineInterface, askServer: boolean): Promise<CodexQuota | null> {
   const home = await $.env.get('USERPROFILE')
   const root = await $.env.get('SystemRoot')
   if (home === undefined || root === undefined) return null
+  const nowMs = await $.clock.now()
   return readCodexQuota(home, {
     readText: path => $.fs.read(path).catch(() => ''),
     list: dir => $.fs.list(dir),
@@ -298,15 +300,27 @@ async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
       $.process
         .run([powershellExe(root), '-NoProfile', '-NonInteractive', '-Command', ROLLOUT_QUERY], { env: { ROLLOUT: path }, timeoutMs: 20_000 })
         .then(done => done.stdout, () => ''),
-  })
+    fetch: (url, headers) => $.http.fetch(url, { headers }),
+  }, { askServer, nowMs })
 }
 
-// A reading without a window keeps the last figure for it: the pane shows it as 0%, marked stale, past its reset.
-async function refreshCodex($: EngineInterface) {
-  const reading = await readCodex($)
-  await update($, codex, old =>
-    reading === null ? null : { ...reading, fiveHour: reading.fiveHour ?? old?.fiveHour, weekly: reading.weekly ?? old?.weekly },
-  )
+// The schedule reads the rollouts only, with no request; the server is asked only when the person
+// presses ↻ (or runs /dashboard refresh). The newer of the two readings is shown (see mergeCodex).
+async function refreshCodex($: EngineInterface, askServer = false) {
+  const reading = await readCodex($, askServer)
+  await update($, codex, old => (reading === null ? null : mergeCodex(old, reading)))
+}
+
+// ↻ on the Codex box: asks the server now, unless a read is already under way; the schedule starts over.
+async function askCodex($: EngineInterface) {
+  if (busy.has('codex')) return
+  busy.add('codex')
+  try {
+    await refreshCodex($, true).catch(swallow)
+    dueAt.codex = (await $.clock.now()) + 300_000
+  } finally {
+    busy.delete('codex')
+  }
 }
 
 // ---------------------------------------------------------------- branch (git)
@@ -531,7 +545,7 @@ async function readSource($: EngineInterface, source: Source): Promise<number> {
       return refreshFable($)
     case 'codex':
       await refreshCodex($)
-      return 120_000
+      return 300_000
     case 'git':
       await refreshGit($)
       return 30_000
@@ -543,7 +557,7 @@ async function readSource($: EngineInterface, source: Source): Promise<number> {
 // A read that throws is tried again after the usual wait, or for Fable after its next backoff.
 function failureWait(source: Source) {
   if (source === 'fable') return (fableDelayMs = nextFableDelay(fableDelayMs, false, undefined))
-  return source === 'codex' ? 120_000 : source === 'git' ? 30_000 : 5_000
+  return source === 'codex' ? 300_000 : source === 'git' ? 30_000 : 5_000
 }
 
 async function runSource($: EngineInterface, source: Source) {
@@ -632,8 +646,8 @@ export const register: Register = (on, options) => {
     if (verb === 'refresh') {
       // Read now, whether or not the pane shows; the schedules start over from here. Fable keeps its own.
       sessionsAt = 0
-      await Promise.all((['codex', 'git', 'others'] as const).filter(src => !busy.has(src)).map(src => runSource($, src)))
-      return { text: 'Read Codex usage, the branch and the other sessions waiting on you again.' }
+      await Promise.all([askCodex($), ...(['git', 'others'] as const).filter(src => !busy.has(src)).map(src => runSource($, src))])
+      return { text: 'Asked the server for Codex usage, and read the branch and the other sessions waiting on you again.' }
     }
     if (verb === 'layout') {
       const layout: Layout | null = arg === 'compact' || arg === 'wide' || arg === 'auto' || arg === 'mini' ? arg : null
@@ -645,7 +659,7 @@ export const register: Register = (on, options) => {
     const opened = await openPane($, cfg.dockPercent)
     if (!opened.isPlaced) return { text: `Dashboard is not shown yet: ${opened.reason}` }
     void pumpPolls($).catch(swallow)
-    return { text: 'Dashboard opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows, u lists the unreviewed files.' }
+    return { text: 'Dashboard opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows, u lists the unreviewed files, r asks the server for Codex usage.' }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
@@ -1439,11 +1453,16 @@ export const register: Register = (on, options) => {
             <Text color={C.codex} bold wrap="truncate">
               {plain(`Codex · ${cx.model ?? '—'}${cx.effort ? ` · ${cx.effort}` : ''}`)}
             </Text>
-            {isNarrow ? null : (
-              <Box flexShrink={0}>
-                <Text dimColor>quota · used</Text>
-              </Box>
-            )}
+            <Box flexShrink={0} columnGap={2}>
+              {isNarrow ? null : <Text dimColor>quota · used</Text>}
+              <Button
+                key="codex-refresh"
+                plain
+                hotkey="r"
+                label={cx.serverAtMs === undefined ? '↻' : `↻ ${ago(cx.serverAtMs, now)}`}
+                onPress={() => void askCodex($).catch(swallow)}
+              />
+            </Box>
           </Box>
           {codexMeters.map((row, i) => meterRow(`codex-${i}`, row, meterLayout(codexMeters, w), C.codex))}
           {cx.note ? (
@@ -1536,7 +1555,8 @@ export const register: Register = (on, options) => {
       (v.gateOpen ? 5 : 0)
     const mainBlock = isPaired('main', 'codex') ? Math.max(mainRows, codexRows) : mainRows + codexRows
     const gitBlock = isPaired('git', 'gate') ? Math.max(gitRows + 2, gateWrapped) : gitRows + gateRows
-    const used = 2 + (banner ? 1 : 0) + mainBlock + (ctxMeter ? 2 : 0) + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    // The main box's flow line under it is a row of its own.
+    const used = 2 + (banner ? 1 : 0) + mainBlock + (panels.includes('main') ? 1 : 0) + (ctxMeter ? 2 : 0) + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1585,30 +1605,42 @@ export const register: Register = (on, options) => {
 
     // Panels with the flow between them; the agents panel draws its own rails. A pair has no rail above
     // it: two boxes side by side, stretched to the taller one's height.
+    // The main session's own flow: an orange line right under the main box, as wide as the box, its
+    // packets running while the main loop works and still otherwise, as the agents' rails do.
+    const mainFlow = (w: number) => rail('main-flow', m.isRunning, C.main, w)
     const column = (ps: readonly ColumnRow[], w: number) => (
       <Box flexDirection="column" width={w}>
         {ps.map((p, i) => {
           if (p === 'ctx') return ctxLine(w)
           if (typeof p !== 'string') {
             const [leftW, rightW] = pairWidths(w) ?? [w, w]
+            // In a pair the line runs under the main box alone, on the main box's side.
+            const flow = p[0] === 'main' ? mainFlow(leftW) : p[1] === 'main' ? (
+              <Box flexDirection="row" columnGap={1} width={w}>
+                <Box width={leftW} />
+                {mainFlow(rightW)}
+              </Box>
+            ) : null
             return (
               <Box flexDirection="column">
                 <Box flexDirection="row" alignItems="stretch" columnGap={1} width={w}>
                   {draw(p[0], leftW, true)}
                   {draw(p[1], rightW, true)}
                 </Box>
+                {flow}
               </Box>
             )
           }
           const prev = ps[i - 1]
           const link =
-            i === 0 || p === 'codex' || p === 'git' || p === 'agents' || prev === 'agents' || p === 'log' || p === 'loops' || prev === 'loops'
+            i === 0 || prev === 'main' || p === 'codex' || p === 'git' || p === 'agents' || prev === 'agents' || p === 'log' || p === 'loops' || prev === 'loops'
               ? null
               : rail(`link-${p}`, p === 'architect' ? advising : m.isRunning, p === 'architect' ? C.arch : C.main, w)
           return (
             <Box flexDirection="column">
               {link}
               {draw(p, w)}
+              {p === 'main' ? mainFlow(w) : null}
               {p === 'agents' ? expandedPanel(w) : null}
             </Box>
           )

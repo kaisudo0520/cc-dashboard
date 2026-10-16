@@ -1,16 +1,26 @@
 # cc-dashboard
 
+**繁體中文** · [English](README.en.md)
+
 Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的任務控制台。只顯示真實的 session 事件與讀數，不做假數字。
 
-以 [Flightdeck](https://github.com/scasella/claude-flightdeck)（Stephen Casella，MIT）為基礎修改：版面、面板、互動與英文標籤沿用 Flightdeck，另外加上：**Codex 額度**與**分支**（多少檔案未審、多少檔案更新）兩個面板、主模型框裡的 **Fable 週額度**、**其他 session 等你回應**的紅字提醒，以及把 **`codex exec` 執行當成子代理**顯示。
+以 [Flightdeck](https://github.com/scasella/claude-flightdeck)（Stephen Casella，MIT）為基礎修改：版面、面板、互動與英文標籤沿用 Flightdeck，另外加上：
+
+- **Codex 額度**面板：5 小時與每週用量；平常只讀本機檔案，按 `↻` 才向伺服器查詢最新數字。
+- **分支**面板：分支、同步狀態、**多少檔案未審、多少檔案更新**。
+- 主模型框裡的 **Fable 週額度**。
+- **其他 session 等你回應**的紅字提醒（本 session 也會寫自己的等待標記）。
+- 把 **`codex exec` 執行當成子代理**卡片顯示（不帶 Codex session id）。
+- 主模型框下方的**橘色流向線**：主 session 工作時流動，與子代理的線一致。
+- 並排版面、Context 單獨一行、側欄寬度跟著終端縮放。
 
 ## 面板
 
 | 面板 | 顯示 | 來源 |
 | :- | :- | :- |
 | **等你回應**（標頭下一行紅字） | 只在「另一個仍在執行的 Claude Code session 正在等你」時出現：`! waiting on you: <session 名稱> <permission／question> <等待時間，如 3m ago>`，多個時加 ` · +<n> more`（等最久的在前）。沒人在等就整行不存在 | 見下方「等你回應」 |
-| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊。上下文量表 `Context`（`█░` 長條、已用 %、`116k/200k`、壓縮次數 ⟲）不在框內：它是主模型框（旁邊有 Codex 框時，是它們）正下方的單獨一行，沒有框線，約占所在欄寬度的一半、靠左對齊（寬版時是左欄，其餘是整個窗格），下方空一行；已填滿的長條與百分比同一個顏色，未滿 50% 綠、50–79% 黃、80% 起紅（色彩跟著所選調色盤），底軌為淡色；`panels` 沒有 `main` 時不顯示，讀不到上下文時也不顯示 | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
-| **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`） | 見下方「Codex 額度」 |
+| **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊。框的正下方有一條**橘色流向線**（寬度與框相同）：主迴圈工作時有圓點流動，閒置時是靜止的暗線；與 Codex 框並排時只畫在主模型框那一側；`motion: off` 時改為靜止的線。上下文量表 `Context`（`█░` 長條、已用 %、`116k/200k`、壓縮次數 ⟲）不在框內：它是主模型框（旁邊有 Codex 框時，是它們）與橘線之下的單獨一行，沒有框線，約占所在欄寬度的一半、靠左對齊（寬版時是左欄，其餘是整個窗格），下方空一行；已填滿的長條與百分比同一個顏色，未滿 50% 綠、50–79% 黃、80% 起紅（色彩跟著所選調色盤），底軌為淡色；`panels` 沒有 `main` 時不顯示，讀不到上下文時也不顯示 | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
+| **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`）。標題右側的 `↻`（熱鍵 `r`）按下才向伺服器查詢最新數字，旁邊顯示上次查詢是多久以前（`↻ 3m ago`） | 見下方「Codex 額度」 |
 | **分支** | `🔀 <分支名>`、`↔ <upstream> ↑ahead ↓behind`（沒有 upstream 顯示 `no upstream`）；**`unreviewed N files · changed M files`**。全部審過顯示 `✓ unreviewed 0`，無法判斷時顯示 `unreviewed ?`（絕不顯示成 0）。有未審檔案時 `u` 展開清單（最多 8 行，其餘以 `… N more` 計） | 見下方「分支」 |
 | **顧問** | 諮詢時間軸、是否正在諮詢、上次耗時；推測的時機（`before a plan`／`error repeats`／`before done`，標 `(inferred)`）；子代理顧問建議的第一行 | 符合樣式的 agent 類型，或 assistant 列中的 server tool |
 | **權限** | 每次權限檢查一格：綠＝規則允許、藍＝分類器或你允許後執行、黃＝待決、紅 ✗＝拒絕，子代理內的較暗。總計，與依工具類別（`f` file／`s` shell／`o` other）展開最近 5 筆（憑證遮蔽） | `tool.check`，由其後的 `tool.call` 結算 |
@@ -36,18 +46,19 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 | `/dashboard` | 開啟面板 |
 | `/dashboard close` | 關閉 |
 | `/dashboard reset` | 清掉子代理、檢查、諮詢、紀錄與回合（額度、壓縮次數、Codex 與分支保留） |
-| `/dashboard refresh` | 立刻重讀 Codex 額度、分支與其他 session 的等待（不論面板是否顯示；Fable 照自己的排程） |
+| `/dashboard refresh` | 向伺服器查詢 Codex 額度（同按 `↻`），並立刻重讀分支與其他 session 的等待（不論面板是否顯示；Fable 照自己的排程） |
 | `/dashboard layout auto\|compact\|wide\|mini` | 本 session 的版面 |
 
-用 `ctrl+x tab` 聚焦面板後：`1`–`6` 展開子代理，`f` `s` `o` 展開權限明細，`u` 展開未審檔案清單。`/clear` 會連同對話重設面板（Codex 與分支不受影響）。
+用 `ctrl+x tab` 聚焦面板後：`1`–`6` 展開子代理，`f` `s` `o` 展開權限明細，`u` 展開未審檔案清單，`r` 向伺服器查詢 Codex 額度。`/clear` 會連同對話重設面板（Codex 與分支不受影響）。
 
 ## Codex 額度
 
 只讀、只顯示。需要 `USERPROFILE` 與 `SystemRoot`（Windows）；任一個沒有就不讀，Codex 面板不出現。
 
 - 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 的 `model_reasoning_effort`。
-- 視窗：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
-- 新讀數缺某個視窗時保留舊值。每 120 秒一次。
+- 視窗，**按 `↻` 才問伺服器**：Codex 框標題右側的 `↻`（面板聚焦時熱鍵 `r`，或 `/dashboard refresh`）按下時，若 `~/.codex/auth.json` 裡有 ChatGPT 登入（`tokens.access_token`，以及 `tokens.account_id`），就向 `GET https://chatgpt.com/backend-api/wham/usage` 查詢，那是 Codex 自己的 `/status` 用的那個呼叫，header 與 Codex 相同（`Authorization: Bearer …`、`ChatGPT-Account-Id`、`User-Agent: codex-cli`）。它回傳帳號在伺服器端的 5 小時與每週已用 % 與重設時間，**不消耗額度**；在別台電腦或 ChatGPT 網頁上用掉的也算得到，沒呼叫 Codex 時數字照樣更新。token 只用在這一個請求，不寫進 state、不畫出來、不寫回 auth.json（過期時要等 Codex 下次執行自己更新；在那之前查詢會被拒絕，就改讀 rollout）。token 與 account id 只接受 JWT／id 會有的字元，避免被塞進額外的 header。這是**未公開的私有 API**：回應不是預期的格式、被拒絕、連不上，或用 API key 登入（沒有 ChatGPT token）時，一律退回下面讀 rollout 的方式。
+- 視窗，**平常讀 rollout**（定時讀取只讀本機檔案、不發任何請求；按 `↻` 但伺服器沒回答時也用這個）：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
+- 伺服器與 rollout 的讀數**取較新的顯示**（伺服器讀數以查詢當下為時間，rollout 以事件時間；沒有時間的讀數算最舊），所以按完 `↻` 後不會被較舊的 rollout 蓋掉，之後在本機用了 Codex 則由較新的 rollout 接手。`↻` 旁顯示上次伺服器回答是多久以前（`↻ 3m ago`）。新讀數缺某個視窗時保留舊值。rollout 每 5 分鐘讀一次，只在面板顯示時進行。
 
 ## Fable 週額度
 
@@ -109,7 +120,8 @@ Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每
 | :- | :- |
 | `hooks/register.tsx` | 事件 hook、狀態存取、Codex／git 的 I/O 與輪詢、每個面板的繪製（所有碰 `$` 的程式都在這裡） |
 | `hooks/core.ts` | 所有 reducer、格式化與版面規則（純函式），含 Codex 視窗與分支文字 |
-| `hooks/rail.tsx`、`hooks/elapsed.tsx` | surface 模組：動畫連接線與計時器 |
+| `hooks/rail.tsx`、`hooks/elapsed.tsx` | surface 模組：動畫連接線（子代理、主模型的橘線）與計時器 |
+| `hooks/lib/codex-usage.ts` | Codex auth.json 的 ChatGPT 登入、用量端點的 header 與回應解析 |
 | `hooks/lib/codex-quota.ts` | Codex rollout、config、model-choice 的解析與走訪（收讀取函式，不碰 `$`） |
 | `hooks/lib/git.ts`、`git-tree.ts`、`git-filters.ts` | git status 解析、只讀 git 指令、filter 關閉、未審計算 |
 | `hooks/lib/review-store.ts` | 審查紀錄的讀寫與上限 |
@@ -118,7 +130,7 @@ Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每
 | `hooks/lib/codex.ts`、`shell-mask.ts`、`notify.ts` | 判斷 `codex exec` 與用途、遮掉 shell 裡不是程式碼的部分、背景任務通知 |
 | `hooks/lib/plain.ts`、`system.ts` | 外部字串去控制字元與「多久以前」（`3m ago`）、`tasklist`／PowerShell 完整路徑 |
 | `types/index.d.ts` | 狀態型別 |
-| `tests/` | `dashboard.test.ts`（Flightdeck 原有面板）、`dashboard-extras.test.ts`（Codex 額度、分支、審查、Fable、等你回應、Codex 卡片、摘要列、輪詢）與各 lib 的單元測試 |
+| `tests/` | 畫面與 hook：`dashboard.test.ts`（Flightdeck 原有面板、主模型流向線）、`dashboard-extras.test.ts`（Codex 額度與 `↻`、分支、審查、Fable、等你回應、Codex 卡片、摘要列、輪詢）、`pairs-pane.test.ts`／`pairs.test.ts`（並排版面）、`dock.test.ts`（側欄寬度）、`context-line.test.ts`、`palette.test.ts`；其餘是各 lib 的單元測試（`codex*`、`git*`、`review-store`、`fable`、`notify`、`sessions`、`waiting`、`shell-mask`、`serial`、`plain`、`system`） |
 
 ## 測試
 

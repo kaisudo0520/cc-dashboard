@@ -76,6 +76,9 @@ type World = {
   fetchOk: boolean
   fetchBody: string
   fetchCalls: number
+  /** What the ChatGPT usage call answers, and every call made to it. */
+  codexUsage: string
+  codexFetches: { url: string; headers: Record<string, string> }[]
   dirs: Record<string, { name: string; kind: 'dir' | 'file' }[]>
   tasklist: string
   writes: { path: string; text: string }[]
@@ -101,6 +104,8 @@ const engine = (on: On, world: Partial<World> = {}) => {
     fetchOk: true,
     fetchBody: '{"limits":[]}',
     fetchCalls: 0,
+    codexUsage: '',
+    codexFetches: [],
     dirs: {},
     tasklist: '',
     writes: [],
@@ -126,7 +131,11 @@ const engine = (on: On, world: Partial<World> = {}) => {
   on('classic.Stop', () => ({}))
   on('session.id', () => ({ value: 'session-a' }))
   on('session.authorize', () => ({ value: w.auth }))
-  on('http.fetch', () => {
+  on('http.fetch', (_$, e) => {
+    if (e.url.startsWith('https://chatgpt.com/')) {
+      w.codexFetches.push({ url: e.url, headers: e.init?.headers ?? {} })
+      return { value: { status: 200, ok: true, headers: {}, text: w.codexUsage } }
+    }
     w.fetchCalls += 1
     return { value: { status: w.fetchOk ? 200 : 500, ok: w.fetchOk, headers: {}, text: w.fetchBody } }
   })
@@ -615,4 +624,75 @@ test('a meter line with no frame takes the whole width less its label, percent, 
   expect(lineMeterWidth(78, 3, '')).toBe(68)
   expect(lineMeterWidth(78, 3, '', '  ⟲2')).toBe(64)
   expect(meterWidth(200, 3, ['116k/200k'])).toBe(40) // the boxed rows keep their cap
+})
+
+// ---------------------------------------------------------------- Codex usage from the server
+
+test('with a ChatGPT login, Codex usage comes from the server, signed with that login, and no rollout is read', async ($, on) => {
+  const token = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.c2lnbmF0dXJlMTIz'
+  const { w } = engine(on, {
+    rollout: codexLine(62, inSeconds(HOUR_MS), 30, inSeconds(24 * HOUR_MS)),
+    files: { [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { access_token: token, account_id: 'acct-1' } }) },
+    codexUsage: JSON.stringify({
+      rate_limit: {
+        primary_window: { used_percent: 8, limit_window_seconds: 18000, reset_at: inSeconds(2 * HOUR_MS + 10 * 60_000) },
+        secondary_window: { used_percent: 41, limit_window_seconds: 604800, reset_at: inSeconds(4 * 24 * HOUR_MS + 2 * HOUR_MS) },
+      },
+    }),
+  })
+  await refresh($)
+  expect(w.codexFetches.map(f => f.url)).toEqual(['https://chatgpt.com/backend-api/wham/usage'])
+  expect(w.codexFetches[0]?.headers.Authorization).toBe(`Bearer ${token}`)
+  expect(w.codexFetches[0]?.headers['ChatGPT-Account-Id']).toBe('acct-1')
+  expect(w.processCalls.length).toBe(0)
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: /^ +8%$/ })).toBeDefined()
+  expect(await ui.find({ text: /^ +41%$/ })).toBeDefined()
+  expect(await ui.find({ text: /62%/ })).toBeUndefined()
+  expect(JSON.stringify(await ui.drawn())).not.toContain(token)
+  await ui.unmount()
+})
+
+test('when the server will not answer, Codex usage falls back to the newest rollout', async ($, on) => {
+  const { w } = engine(on, {
+    rollout: codexLine(62, inSeconds(HOUR_MS), 30, inSeconds(24 * HOUR_MS)),
+    files: { [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { access_token: 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln' } }) },
+    codexUsage: '<html>sign in</html>',
+  })
+  await refresh($)
+  expect(w.codexFetches.length).toBe(1)
+  expect(w.processCalls.length > 0).toBe(true)
+  const ui = await $.ui.mount(props(64))
+  expect(await ui.find({ text: /62%/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the schedule never asks the server; ↻ (hotkey r) on the Codex box does, and says when it last did', async ($, on) => {
+  const token = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.c2lnbmF0dXJlMTIz'
+  const { w, clock } = engine(on, {
+    rollout: codexLine(62, inSeconds(HOUR_MS), 30, inSeconds(24 * HOUR_MS)),
+    files: { [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { access_token: token } }) },
+    codexUsage: JSON.stringify({ rate_limit: { primary_window: { used_percent: 8, limit_window_seconds: 18000, reset_at: inSeconds(2 * HOUR_MS) } } }),
+  })
+  await $.session.start({ cwd: '/repo' } as never)
+  w.shown = true
+  await clock.advance(2_000)
+  await new Promise(done => setTimeout(done, 20))
+  await clock.advance(300_000)
+  await new Promise(done => setTimeout(done, 20))
+  expect(w.codexFetches.length).toBe(0)
+  expect(w.processCalls.length > 0).toBe(true)
+  const before = await $.ui.mount(props(64))
+  const button = await before.find({ key: 'codex-refresh' })
+  expect([button?.props.label, button?.props.hotkey]).toEqual(['↻', 'r'])
+  expect(await before.find({ text: /62%/ })).toBeDefined()
+  await before.press({ key: 'codex-refresh' })
+  await new Promise(done => setTimeout(done, 20))
+  await before.unmount()
+  expect(w.codexFetches.length).toBe(1)
+  await clock.advance(3 * 60_000)
+  const after = await $.ui.mount(props(64))
+  expect((await after.find({ key: 'codex-refresh' }))?.props.label).toBe('↻ 3m ago')
+  expect(await after.find({ text: /^ +8%$/ })).toBeDefined()
+  await after.unmount()
 })

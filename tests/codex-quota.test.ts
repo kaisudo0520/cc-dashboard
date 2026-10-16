@@ -262,6 +262,8 @@ test('readCodexQuota shows the pinned model, the configured effort and the windo
     effort: 'high',
     fiveHour: { usedPercent: 13, resetsAtMs: 1791132451000 },
     weekly: { usedPercent: 4.5, resetsAtMs: 1791600000000 },
+    // The reading is dated by its event, so a newer one from elsewhere can be told apart.
+    readAtMs: Date.parse('2026-10-14T10:00:00Z'),
   })
   expect(asked).toEqual([
     '/h/.codex/sessions/2026/10/14/rollout-2026-10-14T11-b.jsonl',

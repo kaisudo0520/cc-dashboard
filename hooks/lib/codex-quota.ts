@@ -1,4 +1,5 @@
 import type { CodexQuota, UsageWindow } from '../../types'
+import { CODEX_USAGE_URL, parseCodexAuth, parseCodexUsage, usageHeaders } from './codex-usage'
 
 // Codex's usage windows, model and effort, read from what Codex itself writes.
 // One `token_count` event in a Codex rollout carries
@@ -197,25 +198,56 @@ export type CodexIo = {
   stat: StatMtime
   /** What the rollout query prints for the rollout at `path`; empty when it fails. */
   queryRollout: (path: string) => Promise<string>
+  /** A GET of `url` with `headers`; it may reject. Used only when the server is asked (see readCodexQuota). */
+  fetch?: (url: string, headers: Record<string, string>) => Promise<{ ok: boolean; text: string }>
+}
+
+// The account's windows as the ChatGPT backend reports them, signed with the ChatGPT login Codex
+// keeps in auth.json (see ./codex-usage). The token is used for this one request and goes nowhere
+// else. No login, an expired token (Codex refreshes it when it next runs; this never writes it), a
+// refusal or an answer of another shape: undefined, and the rollouts are read instead.
+const serverWindows = async (root: string, io: CodexIo): Promise<Pick<CodexQuota, 'fiveHour' | 'weekly'> | undefined> => {
+  if (io.fetch === undefined) return undefined
+  const auth = parseCodexAuth(await io.readText(`${root}/auth.json`))
+  if (auth === undefined) return undefined
+  try {
+    const answer = await io.fetch(CODEX_USAGE_URL, usageHeaders(auth))
+
+    return answer.ok ? parseCodexUsage(answer.text) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
  * Codex's model is the one the choice file pins its calls to (the rules' default
  * without one) and its reasoning effort comes from Codex's config: both are
- * only displayed. Its 5-hour and weekly windows come from the newest
+ * only displayed. Its 5-hour and weekly windows come, when `askServer` is set (the person pressed
+ * refresh) and the login allows, from the ChatGPT backend (current even when Codex has not run here,
+ * dated `nowMs`); otherwise, or when that fails, from the newest
  * token_count event in a rollout, the only place the CLI records them. Of the most recently modified
  * rollouts the reading with the latest event time is shown, not the one from the rollout started last.
  */
-export const readCodexQuota = async (home: string, io: CodexIo): Promise<CodexQuota> => {
+export const readCodexQuota = async (
+  home: string,
+  io: CodexIo,
+  options: { askServer?: boolean; nowMs?: number } = {},
+): Promise<CodexQuota> => {
   const root = `${home}/.codex`
   const model = parseChoice(await io.readText(`${home}/${CHOICE_FILE}`)) ?? DEFAULT_CODEX_MODEL
   const effort = parseCodexEffort(await io.readText(`${root}/config.toml`))
   const base = { model, ...(effort === undefined ? {} : { effort }) }
 
+  const server = options.askServer === true ? await serverWindows(root, io) : undefined
+  if (server !== undefined) {
+    const at = options.nowMs
+    return { ...base, ...server, ...(at === undefined ? {} : { readAtMs: at, serverAtMs: at }) }
+  }
+
   const paths = (await recentRollouts(io.list, `${root}/sessions`, io.stat).catch(() => [])).slice(0, ROLLOUTS_TRIED)
   for (let from = 0; from < paths.length; from += ROLLOUTS_PER_ROUND) {
     const latest = latestOf(await Promise.all(paths.slice(from, from + ROLLOUTS_PER_ROUND).map(path => readingOf(io, path))))
-    if (latest !== undefined) return { ...base, ...latest.limits }
+    if (latest !== undefined) return { ...base, ...latest.limits, ...(Number.isFinite(latest.atMs) ? { readAtMs: latest.atMs } : {}) }
   }
 
   return { ...base, note: 'no usage recorded yet' }
@@ -237,3 +269,28 @@ const latestOf = (readings: readonly (CodexReading | undefined)[]): CodexReading
     (best, reading) => (reading !== undefined && (best === undefined || reading.atMs > best.atMs) ? reading : best),
     undefined,
   )
+
+/**
+ * The panel's figures after a new reading: the windows of whichever reading is newer (a reading of
+ * unknown time is the oldest), a window the newer one lacks kept from the other. So a server reading
+ * the person asked for is not undone by an older rollout at the next poll, and Codex used here later
+ * shows through. The model and effort are the new reading's; the time of the last server answer stays.
+ */
+export const mergeCodex = (old: CodexQuota | null, fresh: CodexQuota): CodexQuota => {
+  if (old === null) return fresh
+  const isNewer = (fresh.readAtMs ?? Number.NEGATIVE_INFINITY) >= (old.readAtMs ?? Number.NEGATIVE_INFINITY)
+  const [first, other] = isNewer ? [fresh, old] : [old, fresh]
+  const fiveHour = first.fiveHour ?? other.fiveHour
+  const weekly = first.weekly ?? other.weekly
+  const readAtMs = isNewer ? fresh.readAtMs : old.readAtMs
+  const serverAtMs = fresh.serverAtMs ?? old.serverAtMs
+  const { note, readAtMs: _r, serverAtMs: _s, fiveHour: _f, weekly: _w, ...rest } = fresh
+  return {
+    ...rest,
+    ...(fiveHour === undefined ? {} : { fiveHour }),
+    ...(weekly === undefined ? {} : { weekly }),
+    ...(fiveHour === undefined && weekly === undefined && note !== undefined ? { note } : {}),
+    ...(readAtMs === undefined ? {} : { readAtMs }),
+    ...(serverAtMs === undefined ? {} : { serverAtMs }),
+  }
+}

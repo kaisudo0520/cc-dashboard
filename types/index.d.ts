@@ -111,6 +111,10 @@ export type CodexQuota = {
   weekly?: UsageWindow
   /** Why the figures are missing, when they are. */
   note?: string
+  /** When the windows were reported: the server answer's time, or the rollout event's; absent when unknown. */
+  readAtMs?: number
+  /** When the server last answered a refresh the person asked for. */
+  serverAtMs?: number
 }
 
 /** The Fable weekly window from /api/oauth/usage; `isStale` when the last ask failed and the figure may be old. */
