@@ -4,6 +4,8 @@
 
 A Claude Code mod that draws a live mission-control pane beside the transcript (or above the prompt). It shows only real session events and readings: no made-up numbers.
 
+![The pane while two subagents run: main and Codex usage side by side, the context line, branch and gate side by side, the architect, two agent cards, the turn receipt](docs/screenshots/dashboard.jpg)
+
 Built on [Flightdeck](https://github.com/scasella/claude-flightdeck) (Stephen Casella, MIT). The layouts, panels, interactions and English labels come from Flightdeck. cc-dashboard adds:
 
 - A **Codex usage** panel: 5-hour and weekly usage. It normally reads local files only; the server is asked for fresh figures only when you press `↻`.

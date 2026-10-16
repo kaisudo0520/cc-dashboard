@@ -4,6 +4,8 @@
 
 Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的任務控制台。只顯示真實的 session 事件與讀數，不做假數字。
 
+![兩個子代理執行中的面板：main 與 Codex 用量並排、context 一行、branch 與 gate 並排、architect、兩張子代理卡片、本輪回合摘要](docs/screenshots/dashboard.jpg)
+
 以 [Flightdeck](https://github.com/scasella/claude-flightdeck)（Stephen Casella，MIT）為基礎修改：版面、面板、互動與英文標籤沿用 Flightdeck，另外加上：
 
 - **Codex 額度**面板：5 小時與每週用量；平常只讀本機檔案，按 `↻` 才向伺服器查詢最新數字。
