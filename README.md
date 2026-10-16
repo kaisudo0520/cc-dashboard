@@ -48,7 +48,7 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 - 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 的 `model_reasoning_effort`。
 - 視窗，**先問伺服器**：`~/.codex/auth.json` 裡有 ChatGPT 登入（`tokens.access_token`，以及 `tokens.account_id`）時，向 `GET https://chatgpt.com/backend-api/wham/usage` 查詢，就是 Codex 自己的 `/status` 用的那個呼叫，header 與 Codex 相同（`Authorization: Bearer …`、`ChatGPT-Account-Id`、`User-Agent: codex-cli`）。它回傳帳號在伺服器端的 5 小時與每週已用 % 與重設時間，**不消耗額度**；在別台電腦或 ChatGPT 網頁上用掉的也算得到，沒呼叫 Codex 時數字照樣更新。token 只用在這一個請求，不寫進 state、不畫出來、不寫回 auth.json（過期時要等 Codex 下次執行自己更新；在那之前查詢會被拒絕，就改讀 rollout）。token 與 account id 只接受 JWT／id 會有的字元，避免被塞進額外的 header。這是**未公開的私有 API**：回應不是預期的格式、被拒絕、連不上，或用 API key 登入（沒有 ChatGPT token）時，一律退回下面讀 rollout 的方式。
 - 視窗，**退回讀 rollout**：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
-- 新讀數缺某個視窗時保留舊值。每 120 秒一次（伺服器查詢一次；退回時才跑 PowerShell），只在面板顯示時進行。
+- 新讀數缺某個視窗時保留舊值。每 5 分鐘一次（伺服器查詢一次；退回時才跑 PowerShell），只在面板顯示時進行。
 
 ## Fable 週額度
 

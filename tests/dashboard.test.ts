@@ -574,3 +574,30 @@ test("the main box has no speed line: a request's time to first token and decode
     await ui.unmount()
   }
 })
+
+test("the main session's orange line runs under the main box while its turn works, and rests otherwise", async ($, on) => {
+  engine(on)
+  const flow = async (cols: number) => {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    const line = await ui.find({ key: 'main-flow' })
+    await ui.unmount()
+    return line?.props as { width?: number; props?: { active?: boolean; color?: string } } | undefined
+  }
+  expect((await flow(64))?.props).toMatchObject({ active: false, color: 'claude' })
+  await $.turn.start({ text: 'go', turnId: 'F1' })
+  for (const cols of [64, 100, 120]) expect((await flow(cols))?.props?.active).toBe(true)
+  // Alone in its row the line is the pane's width; in the wide layout, the left column's.
+  expect((await flow(64))?.width).toBe(64)
+  expect((await flow(120))?.width).toBe(59)
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'F1', reason: 'answer' })
+  expect((await flow(64))?.props?.active).toBe(false)
+})
+
+test('the main line is still where nothing animates', { options: { motion: 'off' } }, async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'go', turnId: 'F2' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ key: 'main-flow' })).toBeUndefined()
+  expect(await ui.find({ text: '─'.repeat(64) })).toBeDefined()
+  await ui.unmount()
+})

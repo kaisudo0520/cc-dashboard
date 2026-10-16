@@ -533,7 +533,7 @@ async function readSource($: EngineInterface, source: Source): Promise<number> {
       return refreshFable($)
     case 'codex':
       await refreshCodex($)
-      return 120_000
+      return 300_000
     case 'git':
       await refreshGit($)
       return 30_000
@@ -545,7 +545,7 @@ async function readSource($: EngineInterface, source: Source): Promise<number> {
 // A read that throws is tried again after the usual wait, or for Fable after its next backoff.
 function failureWait(source: Source) {
   if (source === 'fable') return (fableDelayMs = nextFableDelay(fableDelayMs, false, undefined))
-  return source === 'codex' ? 120_000 : source === 'git' ? 30_000 : 5_000
+  return source === 'codex' ? 300_000 : source === 'git' ? 30_000 : 5_000
 }
 
 async function runSource($: EngineInterface, source: Source) {
@@ -1538,7 +1538,8 @@ export const register: Register = (on, options) => {
       (v.gateOpen ? 5 : 0)
     const mainBlock = isPaired('main', 'codex') ? Math.max(mainRows, codexRows) : mainRows + codexRows
     const gitBlock = isPaired('git', 'gate') ? Math.max(gitRows + 2, gateWrapped) : gitRows + gateRows
-    const used = 2 + (banner ? 1 : 0) + mainBlock + (ctxMeter ? 2 : 0) + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    // The main box's flow line under it is a row of its own.
+    const used = 2 + (banner ? 1 : 0) + mainBlock + (panels.includes('main') ? 1 : 0) + (ctxMeter ? 2 : 0) + 1 + gitBlock + (showArchitect ? 6 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1587,30 +1588,42 @@ export const register: Register = (on, options) => {
 
     // Panels with the flow between them; the agents panel draws its own rails. A pair has no rail above
     // it: two boxes side by side, stretched to the taller one's height.
+    // The main session's own flow: an orange line right under the main box, as wide as the box, its
+    // packets running while the main loop works and still otherwise, as the agents' rails do.
+    const mainFlow = (w: number) => rail('main-flow', m.isRunning, C.main, w)
     const column = (ps: readonly ColumnRow[], w: number) => (
       <Box flexDirection="column" width={w}>
         {ps.map((p, i) => {
           if (p === 'ctx') return ctxLine(w)
           if (typeof p !== 'string') {
             const [leftW, rightW] = pairWidths(w) ?? [w, w]
+            // In a pair the line runs under the main box alone, on the main box's side.
+            const flow = p[0] === 'main' ? mainFlow(leftW) : p[1] === 'main' ? (
+              <Box flexDirection="row" columnGap={1} width={w}>
+                <Box width={leftW} />
+                {mainFlow(rightW)}
+              </Box>
+            ) : null
             return (
               <Box flexDirection="column">
                 <Box flexDirection="row" alignItems="stretch" columnGap={1} width={w}>
                   {draw(p[0], leftW, true)}
                   {draw(p[1], rightW, true)}
                 </Box>
+                {flow}
               </Box>
             )
           }
           const prev = ps[i - 1]
           const link =
-            i === 0 || p === 'codex' || p === 'git' || p === 'agents' || prev === 'agents' || p === 'log' || p === 'loops' || prev === 'loops'
+            i === 0 || prev === 'main' || p === 'codex' || p === 'git' || p === 'agents' || prev === 'agents' || p === 'log' || p === 'loops' || prev === 'loops'
               ? null
               : rail(`link-${p}`, p === 'architect' ? advising : m.isRunning, p === 'architect' ? C.arch : C.main, w)
           return (
             <Box flexDirection="column">
               {link}
               {draw(p, w)}
+              {p === 'main' ? mainFlow(w) : null}
               {p === 'agents' ? expandedPanel(w) : null}
             </Box>
           )

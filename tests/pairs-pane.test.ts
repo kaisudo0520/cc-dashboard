@@ -311,7 +311,8 @@ test('the log is given the rows two to a row leave it, not the sum of both boxes
     await ui.unmount()
     return n
   }
-  expect([await logRowsOf(64), await logRowsOf(78)]).toEqual([4, 7])
+  // The main box's flow line under it takes a row too.
+  expect([await logRowsOf(64), await logRowsOf(78)]).toEqual([4, 6])
 })
 
 test('the pairs begin at 70 columns and end where the wide layout takes over, at 110', async ($, on) => {
@@ -532,6 +533,18 @@ test('the log is given the rows the context line leaves it', async ($, on) => {
     await ui.unmount()
     return n
   }
-  // Stacked: 36 rows of panels (the main box 4, the context 2 with its blank row), so 45 rows leave 6; two to a row: 28, so 37 leave 6.
-  expect([await logRowsOf(64, 45), await logRowsOf(78, 37)]).toEqual([6, 6])
+  // Stacked: 37 rows of panels (the main box 4 and its flow line 1, the context 2 with its blank row), so 45 rows leave 5;
+  // two to a row: 29, so 37 leave 5.
+  expect([await logRowsOf(64, 45), await logRowsOf(78, 37)]).toEqual([5, 5])
+})
+
+test('two to a row, the main flow line runs under the main box alone', async ($, on) => {
+  engine(on)
+  await dashboard($, 'refresh')
+  await check($)
+  const ui = await $.ui.mount(props(78))
+  const row = rowOf(await ui.drawn(), MAIN, CODEX)
+  const flow = await ui.find({ key: 'main-flow' })
+  expect(flow?.props.width).toBe(kids(row)[0]?.props?.width)
+  await ui.unmount()
 })
