@@ -1,4 +1,5 @@
 import type { CodexQuota, UsageWindow } from '../../types'
+import { CODEX_USAGE_URL, parseCodexAuth, parseCodexUsage, usageHeaders } from './codex-usage'
 
 // Codex's usage windows, model and effort, read from what Codex itself writes.
 // One `token_count` event in a Codex rollout carries
@@ -197,12 +198,32 @@ export type CodexIo = {
   stat: StatMtime
   /** What the rollout query prints for the rollout at `path`; empty when it fails. */
   queryRollout: (path: string) => Promise<string>
+  /** A GET of `url` with `headers`; it may reject. Without it the server is not asked. */
+  fetch?: (url: string, headers: Record<string, string>) => Promise<{ ok: boolean; text: string }>
+}
+
+// The account's windows as the ChatGPT backend reports them, signed with the ChatGPT login Codex
+// keeps in auth.json (see ./codex-usage). The token is used for this one request and goes nowhere
+// else. No login, an expired token (Codex refreshes it when it next runs; this never writes it), a
+// refusal or an answer of another shape: undefined, and the rollouts are read instead.
+const serverWindows = async (root: string, io: CodexIo): Promise<Pick<CodexQuota, 'fiveHour' | 'weekly'> | undefined> => {
+  if (io.fetch === undefined) return undefined
+  const auth = parseCodexAuth(await io.readText(`${root}/auth.json`))
+  if (auth === undefined) return undefined
+  try {
+    const answer = await io.fetch(CODEX_USAGE_URL, usageHeaders(auth))
+
+    return answer.ok ? parseCodexUsage(answer.text) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
  * Codex's model is the one the choice file pins its calls to (the rules' default
  * without one) and its reasoning effort comes from Codex's config: both are
- * only displayed. Its 5-hour and weekly windows come from the newest
+ * only displayed. Its 5-hour and weekly windows come from the ChatGPT backend when the login
+ * allows (current even when Codex has not run here); otherwise from the newest
  * token_count event in a rollout, the only place the CLI records them. Of the most recently modified
  * rollouts the reading with the latest event time is shown, not the one from the rollout started last.
  */
@@ -211,6 +232,9 @@ export const readCodexQuota = async (home: string, io: CodexIo): Promise<CodexQu
   const model = parseChoice(await io.readText(`${home}/${CHOICE_FILE}`)) ?? DEFAULT_CODEX_MODEL
   const effort = parseCodexEffort(await io.readText(`${root}/config.toml`))
   const base = { model, ...(effort === undefined ? {} : { effort }) }
+
+  const server = await serverWindows(root, io)
+  if (server !== undefined) return { ...base, ...server }
 
   const paths = (await recentRollouts(io.list, `${root}/sessions`, io.stat).catch(() => [])).slice(0, ROLLOUTS_TRIED)
   for (let from = 0; from < paths.length; from += ROLLOUTS_PER_ROUND) {

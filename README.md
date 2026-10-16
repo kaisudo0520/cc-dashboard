@@ -10,7 +10,7 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 | :- | :- | :- |
 | **等你回應**（標頭下一行紅字） | 只在「另一個仍在執行的 Claude Code session 正在等你」時出現：`! waiting on you: <session 名稱> <permission／question> <等待時間，如 3m ago>`，多個時加 ` · +<n> more`（等最久的在前）。沒人在等就整行不存在 | 見下方「等你回應」 |
 | **主模型** | 模型、強度、權限模式、請求數；前兩個額度視窗（`5h`、`7d`）與 **Fable 週額度**各占一行：撐開的 `━─` 長條、已用 %、距重設的時間（⏱），過了重設時間就視為已重設，顯示 `~0%` 與 `stale`（等新讀數到來），Fable 上次讀取失敗時標籤為 `Fable~`；同一框內的長條等長、對齊。上下文量表 `Context`（`█░` 長條、已用 %、`116k/200k`、壓縮次數 ⟲）不在框內：它是主模型框（旁邊有 Codex 框時，是它們）正下方的單獨一行，沒有框線，約占所在欄寬度的一半、靠左對齊（寬版時是左欄，其餘是整個窗格），下方空一行；已填滿的長條與百分比同一個顏色，未滿 50% 綠、50–79% 黃、80% 起紅（色彩跟著所選調色盤），底軌為淡色；`panels` 沒有 `main` 時不顯示，讀不到上下文時也不顯示 | `turn.step`、`session.measure`、`session.compact`、`$.session.usage()`；Fable 見下方 |
-| **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`） | 見下方「Codex 額度」 |
+| **Codex** | `Codex · <模型> · <強度>`，`5h`、`weekly` 兩個視窗各占一行：已用 % 長條與距重設時間。重設時間過了就視為已重設（Codex 在重設後第一個請求才開新視窗），顯示 `~0%` 並標 `stale`，等新讀數到來；讀不到數字時顯示原因（例如 `no usage recorded yet`）。有 ChatGPT 登入時數字來自伺服器，沒呼叫 Codex 也是最新的 | 見下方「Codex 額度」 |
 | **分支** | `🔀 <分支名>`、`↔ <upstream> ↑ahead ↓behind`（沒有 upstream 顯示 `no upstream`）；**`unreviewed N files · changed M files`**。全部審過顯示 `✓ unreviewed 0`，無法判斷時顯示 `unreviewed ?`（絕不顯示成 0）。有未審檔案時 `u` 展開清單（最多 8 行，其餘以 `… N more` 計） | 見下方「分支」 |
 | **顧問** | 諮詢時間軸、是否正在諮詢、上次耗時；推測的時機（`before a plan`／`error repeats`／`before done`，標 `(inferred)`）；子代理顧問建議的第一行 | 符合樣式的 agent 類型，或 assistant 列中的 server tool |
 | **權限** | 每次權限檢查一格：綠＝規則允許、藍＝分類器或你允許後執行、黃＝待決、紅 ✗＝拒絕，子代理內的較暗。總計，與依工具類別（`f` file／`s` shell／`o` other）展開最近 5 筆（憑證遮蔽） | `tool.check`，由其後的 `tool.call` 結算 |
@@ -46,8 +46,9 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 只讀、只顯示。需要 `USERPROFILE` 與 `SystemRoot`（Windows）；任一個沒有就不讀，Codex 面板不出現。
 
 - 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 的 `model_reasoning_effort`。
-- 視窗：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
-- 新讀數缺某個視窗時保留舊值。每 120 秒一次。
+- 視窗，**先問伺服器**：`~/.codex/auth.json` 裡有 ChatGPT 登入（`tokens.access_token`，以及 `tokens.account_id`）時，向 `GET https://chatgpt.com/backend-api/wham/usage` 查詢，就是 Codex 自己的 `/status` 用的那個呼叫，header 與 Codex 相同（`Authorization: Bearer …`、`ChatGPT-Account-Id`、`User-Agent: codex-cli`）。它回傳帳號在伺服器端的 5 小時與每週已用 % 與重設時間，**不消耗額度**；在別台電腦或 ChatGPT 網頁上用掉的也算得到，沒呼叫 Codex 時數字照樣更新。token 只用在這一個請求，不寫進 state、不畫出來、不寫回 auth.json（過期時要等 Codex 下次執行自己更新；在那之前查詢會被拒絕，就改讀 rollout）。token 與 account id 只接受 JWT／id 會有的字元，避免被塞進額外的 header。這是**未公開的私有 API**：回應不是預期的格式、被拒絕、連不上，或用 API key 登入（沒有 ChatGPT token）時，一律退回下面讀 rollout 的方式。
+- 視窗，**退回讀 rollout**：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
+- 新讀數缺某個視窗時保留舊值。每 120 秒一次（伺服器查詢一次；退回時才跑 PowerShell），只在面板顯示時進行。
 
 ## Fable 週額度
 
@@ -110,6 +111,7 @@ Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每
 | `hooks/register.tsx` | 事件 hook、狀態存取、Codex／git 的 I/O 與輪詢、每個面板的繪製（所有碰 `$` 的程式都在這裡） |
 | `hooks/core.ts` | 所有 reducer、格式化與版面規則（純函式），含 Codex 視窗與分支文字 |
 | `hooks/rail.tsx`、`hooks/elapsed.tsx` | surface 模組：動畫連接線與計時器 |
+| `hooks/lib/codex-usage.ts` | Codex auth.json 的 ChatGPT 登入、用量端點的 header 與回應解析 |
 | `hooks/lib/codex-quota.ts` | Codex rollout、config、model-choice 的解析與走訪（收讀取函式，不碰 `$`） |
 | `hooks/lib/git.ts`、`git-tree.ts`、`git-filters.ts` | git status 解析、只讀 git 指令、filter 關閉、未審計算 |
 | `hooks/lib/review-store.ts` | 審查紀錄的讀寫與上限 |

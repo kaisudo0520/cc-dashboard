@@ -281,7 +281,8 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
 
 // ---------------------------------------------------------------- Codex usage
 // Codex's figures are only displayed (see ./lib/codex-quota): its model from the choice file, its
-// effort from its config, and its 5-hour and weekly windows from the most recently modified rollouts
+// effort from its config, and its 5-hour and weekly windows from the ChatGPT backend's usage call
+// (signed with Codex's own ChatGPT login; spends none of the quota), else from the most recently modified rollouts
 // (the latest event time among the top two wins; the next two are read only when those hold none),
 // read through Windows PowerShell by full path. The rollout's path rides in the environment, never in
 // the command text. Without USERPROFILE or SystemRoot nothing is read and the panel stays hidden.
@@ -298,6 +299,7 @@ async function readCodex($: EngineInterface): Promise<CodexQuota | null> {
       $.process
         .run([powershellExe(root), '-NoProfile', '-NonInteractive', '-Command', ROLLOUT_QUERY], { env: { ROLLOUT: path }, timeoutMs: 20_000 })
         .then(done => done.stdout, () => ''),
+    fetch: (url, headers) => $.http.fetch(url, { headers }),
   })
 }
 
