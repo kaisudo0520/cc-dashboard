@@ -4,7 +4,7 @@
 
 Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的任務控制台。只顯示真實的 session 事件與讀數，不做假數字。
 
-![兩個子代理執行中的面板：main 與 Codex 用量並排、context 一行、branch 與 gate 並排、architect、兩張子代理卡片、本輪回合摘要](docs/screenshots/dashboard.jpg)
+![三個子代理執行時（兩個已完成、一個執行中）的側欄面板：main 與 Codex 用量並排、context 一行、branch 與 gate 並排、architect、帶流向線的子代理卡片、本輪回合摘要](docs/screenshots/dashboard.gif)
 
 以 [Flightdeck](https://github.com/scasella/claude-flightdeck)（Stephen Casella，MIT）為基礎修改：版面、面板、互動與英文標籤沿用 Flightdeck，另外加上：
 
@@ -57,27 +57,27 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 
 只讀、只顯示。需要 `USERPROFILE` 與 `SystemRoot`（Windows）；任一個沒有就不讀，Codex 面板不出現。
 
-- 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 的 `model_reasoning_effort`。
-- 視窗，**按 `↻` 才問伺服器**：Codex 框標題右側的 `↻`（面板聚焦時熱鍵 `r`，或 `/dashboard refresh`）按下時，若 `~/.codex/auth.json` 裡有 ChatGPT 登入（`tokens.access_token`，以及 `tokens.account_id`），就向 `GET https://chatgpt.com/backend-api/wham/usage` 查詢，那是 Codex 自己的 `/status` 用的那個呼叫，header 與 Codex 相同（`Authorization: Bearer …`、`ChatGPT-Account-Id`、`User-Agent: codex-cli`）。它回傳帳號在伺服器端的 5 小時與每週已用 % 與重設時間，**不消耗額度**；在別台電腦或 ChatGPT 網頁上用掉的也算得到，沒呼叫 Codex 時數字照樣更新。token 只用在這一個請求，不寫進 state、不畫出來、不寫回 auth.json（過期時要等 Codex 下次執行自己更新；在那之前查詢會被拒絕，就改讀 rollout）。token 與 account id 只接受 JWT／id 會有的字元，避免被塞進額外的 header。這是**未公開的私有 API**：回應不是預期的格式、被拒絕、連不上，或用 API key 登入（沒有 ChatGPT token）時，一律退回下面讀 rollout 的方式。
-- 視窗，**平常讀 rollout**（定時讀取只讀本機檔案、不發任何請求；按 `↻` 但伺服器沒回答時也用這個）：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
+- 模型：`~/.claude/model-choice.json` 的 `codex`（沒有就顯示規則預設的 `gpt-6-sol`）；強度：`~/.codex/config.toml` 中第一個以 `model_reasoning_effort = "…"` 開頭的行（雙引號、不縮排；不論在檔案哪裡，所以可能是某個 profile 的；單引號的值讀不到）。
+- 視窗，**按 `↻` 才問伺服器**：Codex 框標題右側的 `↻`（面板聚焦時熱鍵 `r`，或 `/dashboard refresh`）按下時，若 `~/.codex/auth.json` 裡有 ChatGPT 登入（`tokens.access_token`；`tokens.account_id` 有且格式正確時才以 `ChatGPT-Account-Id` 帶上），就向 `GET https://chatgpt.com/backend-api/wham/usage` 查詢，那是 Codex 自己的 `/status` 用的那個呼叫，header 與 Codex 相同（`Authorization: Bearer …`、`ChatGPT-Account-Id`、`User-Agent: codex-cli`）。它回傳帳號在伺服器端的 5 小時與每週已用 % 與重設時間，**不消耗額度**；在別台電腦或 ChatGPT 網頁上用掉的也算得到，沒呼叫 Codex 時數字照樣更新。token 只用在這一個請求，不寫進 state、不畫出來、不寫回 auth.json（過期時要等 Codex 下次執行自己更新；在那之前查詢會被拒絕，就改讀 rollout）。token 與 account id 只接受 JWT／id 會有的字元，避免被塞進額外的 header。這是**未公開的私有 API**：回應不是預期的格式、被拒絕、連不上，或用 API key 登入（沒有 ChatGPT token）時，一律退回下面讀 rollout 的方式。已有 Codex 讀取在進行時，按下 `↻`（或 `/dashboard refresh`）會被忽略。
+- 視窗，**平常讀 rollout**（定時讀取只讀本機檔案、不發任何請求；按 `↻` 但伺服器沒回答時也用這個）：從 `~/.codex/sessions/YYYY/MM/DD` 最近 14 個日期資料夾中（累計列到 200 個檔就不再往更舊的資料夾找；某個資料夾列不出來就當作空的），依每個檔案自己的最後修改時間（逐檔向系統查，不用目錄列表上可能過時的時間；查不到時沿用列表上的時間）挑最近修改的 2 個 rollout（長時間續用的舊 session 仍寫在原本的檔案裡；這 2 個都讀不到 codex 讀數時才再讀接下來的 2 個，最多 4 個），取事件時間 `timestamp` 最晚的讀數（相同時取最近修改的；沒有可解析時間的讀數視為最舊）。每個 rollout 各跑一次指令（每次更新通常 2 次，最多 4 次），用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（完整路徑，不靠 PATH）取檔尾 2000 行中含 `"limit_id":"codex"` 的行，只留最後 5 行。rollout 的路徑放在環境變數 `ROLLOUT`，不放進指令文字。依視窗長度分辨 5 小時與每週。
 - 伺服器與 rollout 的讀數**取較新的顯示**（伺服器讀數以查詢當下為時間，rollout 以事件時間；沒有時間的讀數算最舊），所以按完 `↻` 後不會被較舊的 rollout 蓋掉，之後在本機用了 Codex 則由較新的 rollout 接手。`↻` 旁顯示上次伺服器回答是多久以前（`↻ 3m ago`）。新讀數缺某個視窗時保留舊值。rollout 每 5 分鐘讀一次，只在面板顯示時進行。
 
 ## Fable 週額度
 
-`GET https://api.anthropic.com/api/oauth/usage`，由引擎的授權 handle 代為帶憑證（plugin 拿不到憑證，且只有 bearer 登入可用；不是 bearer 就不發請求、不顯示）。取 `limits[]` 中 `kind` 為 `weekly_scoped`、模型名稱含 Fable 的那筆。每 90 秒一次，失敗後等待時間加倍、最長 10 分鐘（或遵守較長的 `retry-after`），失敗時保留上次數字並把標籤改成 `Fable~`；該視窗的重設時間過了之後顯示 `~0%`。
+`GET https://api.anthropic.com/api/oauth/usage`，由引擎的授權 handle 代為帶憑證（plugin 拿不到憑證，且只有 bearer 登入可用；不是 bearer 就不發請求、不顯示）。取 `limits[]` 中 `kind` 為 `weekly_scoped`、模型名稱含 Fable 的那筆。每 90 秒一次，失敗後等待時間加倍、最長 10 分鐘（較長的 `retry-after` 也遵守，但同樣不超過 10 分鐘，且只認秒數、不認日期格式），失敗時保留上次數字並把標籤改成 `Fable~`；該視窗的重設時間過了之後顯示 `~0%`。
 
 ## 等你回應
 
 - **讀（其他 session）**：本機 session registry `~/.claude/sessions/<pid>.json`（只讀最新的 32 個、64 KB 以下、檔名為數字的一般檔案），加上行程表 `%SystemRoot%\System32\tasklist.exe /FO CSV /NH`（完整路徑，15 秒逾時），只算 pid 仍是 `claude`／`node` 的 session；再讀它們的標記檔 `~/.claude/mods-state/status-sidebar/waiting/<pid>.json`，檔內 `sessionId` 必須與 registry 相同（pid 被重用的舊檔不算）。標記約每 5 秒讀一次，registry 與 `tasklist` 約每 30 秒。任何一步讀不到就不顯示（不猜）。
 - **寫（本 session 自己的）**：同一個資料夾、與 status-sidebar 相同格式 `{"sessionId":…,"reason":"permission"｜"question"｜null,"sinceMs":…}`，所以兩邊的 session 互看得到。`classic.PermissionRequest` 寫 `permission`，`AskUserQuestion`／`ExitPlanMode` 開始時寫 `question`；該呼叫回傳、你輸入新的 prompt、主回合結束、session 結束時清除。事件驅動，面板沒開也會寫。
-- 權限等待只知道何時開始、要等該呼叫回傳才結束，所以是「可能」在等你。session 名稱經 `plain()` 去掉控制字元後才畫。
+- 權限等待只知道何時開始、要等該呼叫回傳才結束，所以是「可能」在等你。session 名稱先截成 80 個字元，其中的控制、格式、分隔與標籤字元換成空白後才畫。
 
 ## Codex 執行（子代理）
 
 主對話經 Bash 或 PowerShell 執行的 `codex exec`／`codex exec resume`（子代理的呼叫不算）。只在「指令位置」才算：引號內、註解、heredoc 本體、PowerShell here-string 裡提到的 `codex exec` 都不是執行（遮蔽與比對為單次掃描，只看前 64 KB）。用途依指令判斷：`resume` 為 `Codex resume`，`--sandbox read-only` 為 `Codex plan draft`，`workspace-write` 為 `Codex review`，其他為 `Codex`；卡片的模型取自 Codex 面板讀到的模型。
 
 - 前景執行：呼叫回傳時結束，`isError` 或被拒絕為失敗。
-- 轉成背景（結果帶 `backgroundTaskId`）：卡片持續執行中，由 `task-notification` 通知結束（只認 `<summary>` 之前的 `task-id`、`tool-use-id`、`status`；`failed`／`killed` 或非 0 結束碼為失敗）。通知不會讓本 mod 開任何檔案。
+- 轉成背景（結果帶 `backgroundTaskId`）：卡片持續執行中，由 `task-notification` 通知結束（`task-id`、`tool-use-id`、`status` 只認 `<summary>` 之前的；`status` 為 `failed`／`killed`／`error`，或 `<summary>` 文字裡的 `(exit code N)` 非 0，為失敗）。通知不會讓本 mod 開任何檔案。
 - 每回合結束的 `classic.Stop` 核對：仍掛著的前景執行推斷為失敗，引擎清單裡已沒有的背景執行推斷為完成。
 
 ## 分支
@@ -86,9 +86,9 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 
 - **更新**＝與 HEAD 不同的檔案數（含未追蹤）。
 - **未審**＝已更新、但內容與「最近一次審查所見」不同的檔案數。
-- 審查紀錄（本 plugin 唯一的寫入）：自己的 `$.store`，key `git-reviewed:<repository 根目錄>`，值為「路徑 → 內容雜湊」；最多保留最近 8 個 repository、每個 2000 個路徑（超過就存 `too-many-paths`，顯示 `unreviewed ?`）。只在這些時刻寫入：(1) `Skill` 工具呼叫的 skill 名稱含 `review`；(2) `Agent` 工具呼叫的 `subagent_type` 含 `review`——兩者都在呼叫開始時讀樹，呼叫未被拒絕、未回報錯誤才寫入；(3) 你自己輸入（`composer`／`bridge`／`sdk`）的 `/…review` 斜線指令，送出當下讀樹並寫入。
+- 審查紀錄（本 plugin 的兩種寫入之一，另一種是「等你回應」的等待標記）：自己的 `$.store`，key `git-reviewed:<repository 根目錄>`，值為「路徑 → 內容雜湊」；另有第二個 key `git-reviewed-index` 記住最近寫入的 8 個 repository 的順序，只保留這 8 個、每個 2000 個路徑（超過就存 `too-many-paths`，顯示 `unreviewed ?`；未追蹤檔案超過 500 個時不產生雜湊，同樣顯示 `unreviewed ?`，也不寫入紀錄）。只在這些時刻寫入：(1) `Skill` 工具呼叫的 skill 名稱含 `review`；(2) `Agent` 工具呼叫的 `subagent_type` 含 `review`——兩者都在呼叫開始時讀樹，呼叫未被拒絕、未回報錯誤才寫入；(3) 你自己輸入（`composer`／`bridge`／`sdk`）的 `/…review` 斜線指令，送出當下讀樹並寫入。
 
-Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每 2 秒檢查哪個到期），面板關閉或在背景分頁時不發請求、不開任何程序。例外：為了知道自己標記檔的檔名，session 啟動時（或要寫標記而 pid 還不知道時）會查一次 registry 與 `tasklist`。
+Fable、Codex、git 與其他 session 的等待只在面板顯示時輪詢（每 2 秒檢查哪個到期），面板關閉或在背景分頁時不做定時的請求、不開定時的程序。以下情況不論面板狀態都會進行：為了知道自己標記檔的檔名，session 啟動時（或要寫標記而 pid 還不知道時）會查一次 registry 與 `tasklist`；審查觸發（上述 `Skill`／`Agent` 呼叫，或你輸入的 `/…review`）會讀 git 樹；`/dashboard refresh` 會立刻查詢與讀取；等待標記則依事件寫入（見「等你回應」）。
 
 ## 推測，不是量測
 

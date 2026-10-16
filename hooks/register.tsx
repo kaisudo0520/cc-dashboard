@@ -326,7 +326,7 @@ async function askCodex($: EngineInterface) {
 // ---------------------------------------------------------------- branch (git)
 // The session's repository, read with read-only git (the commands are spelled in ./lib/git-tree).
 // A changed file is unreviewed when the last review did not see its contents as they are now. What
-// a review saw is the one thing this plugin writes: under `git-reviewed:<root>` in its own `$.store`.
+// a review saw is one of the two things this plugin writes (the other is the wait mark): under `git-reviewed:<root>` in its own `$.store`.
 
 const gitRun = ($: EngineInterface): GitRun => (argv, init) => $.process.run(argv, { timeoutMs: GIT_TIMEOUT_MS, ...init })
 
