@@ -39,9 +39,21 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 
 ## 使用
 
+**安裝。** 把 repository clone 到你選定的固定資料夾：
+
 ```
-claude --plugin-dir N:\projects\github\cc-dashboard
+git clone https://github.com/kaisudo0520/cc-dashboard.git <folder>
 ```
+
+只在單一 session 試用：`claude --plugin-dir <folder>`。要每個 session 都載入，就把該資料夾加進 `~/.claude/settings.json` 的 `env` 裡的 `CLAUDE_CODE_PLUGIN_DIRS`：
+
+```json
+{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "<folder>" } }
+```
+
+**更新。** 在該資料夾執行 `git pull`；之後新開的 session 就用新版。
+
+**開發此 mod。** 你編輯的工作副本，要和日常 session 載入的副本分開。只要資料夾內的檔案有變動，Claude Code 就會在每個載入該資料夾的執行中 session 重新載入這個 mod，所以編輯期間，那些 session 裡的面板可能變成空白，或在編輯到一半時被擠到別的面板分頁後面；執行 `/dashboard` 或重新啟動 session 即可恢復。
 
 | 指令 | 作用 |
 | :- | :- |

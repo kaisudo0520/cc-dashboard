@@ -44,9 +44,21 @@ After `/tui fullscreen` (or `"tui": "fullscreen"` in `settings.json`, effective 
 
 ## Use
 
+**Install.** Clone the repository to a fixed folder of your choice:
+
 ```
-claude --plugin-dir N:\projects\github\cc-dashboard
+git clone https://github.com/kaisudo0520/cc-dashboard.git <folder>
 ```
+
+To try it in one session: `claude --plugin-dir <folder>`. To load it in every session, put the folder in `CLAUDE_CODE_PLUGIN_DIRS` under `env` in `~/.claude/settings.json`:
+
+```json
+{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "<folder>" } }
+```
+
+**Update.** Run `git pull` in that folder; new sessions use the new version.
+
+**Developing the mod.** Keep the working copy you edit apart from the copy your everyday sessions load. Claude Code reloads a mod in every running session that loads its folder whenever the folder's files change, so while you edit, the pane in those sessions can go blank or end up behind another pane's tab mid-edit; `/dashboard` or restarting the session brings it back.
 
 | Command | Does |
 | :- | :- |
