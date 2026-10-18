@@ -69,6 +69,7 @@ import {
   narrowEffort,
   normalize,
   normalizeCard,
+  uniqueById,
   normalizeGate,
   normalizeLog,
   noteTool,
@@ -151,7 +152,7 @@ async function getGate($: EngineInterface): Promise<Gate> {
   return normalizeGate(await read($, gate))
 }
 async function getCards($: EngineInterface): Promise<AgentCard[]> {
-  return listOf<unknown>(await read($, agents)).map(normalizeCard)
+  return uniqueById(listOf<unknown>(await read($, agents)).map(normalizeCard))
 }
 async function getLoops($: EngineInterface): Promise<Loop[]> {
   return listOf<Loop>(await read($, loops))
@@ -939,7 +940,8 @@ export const register: Register = (on, options) => {
       description: e.description,
       spawnedAt: await $.clock.now(),
     }
-    await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
+    // A resumed subagent comes back with its old id: its fresh card replaces the old one
+    await update($, agents, list => uniqueById([...listOf<unknown>(list).map(normalizeCard), card]).slice(-24))
     await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
     await say($, shorten(cardTitle(card), 12), `spawned · ${card.type}`, 'info', id)
     await refreshStatus($, cfg)

@@ -82,6 +82,12 @@ export const normalizeCard = (stored: unknown): AgentCard =>
     stored,
   )
 
+/** Cards with unique ids: the last of any repeated id wins, the rest keep their order. */
+export const uniqueById = (cards: AgentCard[]): AgentCard[] => {
+  const ids = cards.map(c => c.id)
+  return cards.filter((c, i) => ids.lastIndexOf(c.id) === i)
+}
+
 export const normalizeLog = (stored: unknown): LogLine[] =>
   listOf<Record<string, unknown>>(stored).map(l => ({
     at: typeof l.at === 'number' ? l.at : 0,

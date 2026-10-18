@@ -34,6 +34,7 @@ import {
   redact,
   settleCheck,
   trimRecent,
+  uniqueById,
   startConsult,
 } from '../hooks/core'
 import type { Check } from '../types'
@@ -599,5 +600,42 @@ test('the main line is still where nothing animates', { options: { motion: 'off'
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ key: 'main-flow' })).toBeUndefined()
   expect(await ui.find({ text: '─'.repeat(64) })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a resumed subagent keeps one card: the same id replaces its old card and the pane still draws', async ($, on) => {
+  const clock = engine(on)
+  await clock.advance(5000) // a start time of 0 draws no clock
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'dup1' }))
+  await $.turn.start({ text: 'go', turnId: 'D1' })
+  await $.agent.spawn(spawn('general-purpose', 'first run'))
+  await $.agent.spawn(spawn('general-purpose', 'resumed run'))
+  for (const width of [64, 140]) {
+    const ui = await $.ui.mount({ ...pane(width), surface: 'terminal' })
+    expect(await ui.find({ text: /2 total/ })).toBeUndefined()
+    expect(await ui.find({ text: /1 total/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('uniqueById keeps the last card of each id and the order of the rest', () => {
+  const card = (id: string, description: string) => ({ ...normalizeCard({}), id, description })
+  const out = uniqueById([card('a', '1'), card('b', '2'), card('a', '3'), card('c', '4')])
+  expect(out.map(c => `${c.id}:${c.description}`)).toEqual(['b:2', 'a:3', 'c:4'])
+  expect(uniqueById([])).toEqual([])
+})
+
+test('a stored list that already holds one id twice still draws once', async ($, on) => {
+  const clock = engine(on)
+  await clock.advance(5000)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'dup2' }))
+  on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
+  await $.turn.start({ text: 'go', turnId: 'D2' })
+  await $.agent.spawn(spawn('general-purpose', 'a subagent'))
+  // A Codex card is keyed by its call id and is added with no check for that id: here it repeats the subagent's.
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'dup2', command: 'codex exec - < brief.md', description: 'x' } as never)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /1 total/ })).toBeDefined()
+  expect(await ui.find({ text: /2 total/ })).toBeUndefined()
   await ui.unmount()
 })
