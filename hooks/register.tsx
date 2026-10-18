@@ -39,7 +39,9 @@ import {
   limitWindow,
   claudeWindows,
   DOCK_MIN_COLUMNS,
+  DOCK_UNASKED_MIN_COLUMNS,
   dockColumns,
+  dockShareMoved,
   terminalWidth,
   GIT_PATH_ROWS,
   unreviewedLabel,
@@ -242,12 +244,20 @@ let terminalColumns: number | undefined
 let lastPlacement: 'dock' | 'inline' | undefined
 let requestedColumns: number | undefined
 
-async function openPane($: EngineInterface, dockPercent: number) {
+async function openPane($: EngineInterface, dockPercent: number, { focus = false } = {}) {
   // columns apply when docked beside the transcript, rows when seated inline above the prompt.
   // Before any width is known the dock keeps the engine's share; the pump asks once it is.
+  // Only an open the person asked for may focus: it raises the pane over another pane's tab.
   requestedColumns = terminalColumns === undefined ? undefined : dockColumns(terminalColumns, dockPercent)
   try {
-    return await $.ui.open({ id: PANE, title: TITLE, rows: 8, ...(requestedColumns === undefined ? {} : { columns: requestedColumns }) })
+    const args = {
+      id: PANE,
+      title: TITLE,
+      rows: 8,
+      ...(requestedColumns === undefined ? {} : { columns: requestedColumns }),
+      ...(focus ? { focus: true as const } : {}),
+    }
+    return await $.ui.open(args)
   } catch (error) {
     requestedColumns = undefined // a refused open is asked again on the next tick
     throw error
@@ -255,9 +265,15 @@ async function openPane($: EngineInterface, dockPercent: number) {
 }
 
 // A docked pane asks again when the terminal's width moved its share; inline, or hidden, it is left alone.
+// Under the unasked floor the engine may leave this open undrawn, so a narrow terminal is not asked; the
+// width last asked for is forgotten there, so the first reading back above the floor asks for its share.
 async function syncDock($: EngineInterface, dockPercent: number) {
   if (lastPlacement !== 'dock' || terminalColumns === undefined) return
-  if (dockColumns(terminalColumns, dockPercent) === requestedColumns) return
+  if (terminalColumns < DOCK_UNASKED_MIN_COLUMNS) {
+    requestedColumns = undefined
+    return
+  }
+  if (!dockShareMoved(terminalColumns, dockPercent, requestedColumns)) return
   if (await isPaneShown($)) await openPane($, dockPercent)
 }
 
@@ -656,10 +672,10 @@ export const register: Register = (on, options) => {
       const opened = await openPane($, cfg.dockPercent)
       return { text: opened.isPlaced ? `Dashboard layout: ${layout}.` : `Layout set to ${layout}; the pane is not shown yet: ${opened.reason}` }
     }
-    const opened = await openPane($, cfg.dockPercent)
+    const opened = await openPane($, cfg.dockPercent, { focus: true })
     if (!opened.isPlaced) return { text: `Dashboard is not shown yet: ${opened.reason}` }
     void pumpPolls($).catch(swallow)
-    return { text: 'Dashboard opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows, u lists the unreviewed files, r asks the server for Codex usage.' }
+    return { text: 'Dashboard opened and brought to the front when the prompt is free (Esc returns to the prompt; ctrl+x tab focuses it). 1-6 expand cards, f/s/o open the gate rows, u lists the unreviewed files, r asks the server for Codex usage.' }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {

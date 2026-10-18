@@ -40,7 +40,7 @@ A panel with nothing to show takes no room: no subagents, no agents panel; outsi
 
 ## Dock (fullscreen)
 
-After `/tui fullscreen` (or `"tui": "fullscreen"` in `settings.json`, effective at the next start) the pane docks beside the transcript at `dockPercent`% of the terminal's width (default 40%, less the frame, at least 40 columns) and follows the terminal within about 2 seconds of a resize. The terminal's width is known only from a drawing of the terminal's own pane or from running `/dashboard`, so at first the dock keeps the engine's default width and takes its share after the first drawing; a Desktop or phone attached to the session does not affect it. A width you dragged the dock to wins (an engine rule). The fullscreen layout docks from 110 columns; opening on start (when nobody asked) needs 144, and below that `/dashboard` opens it.
+After `/tui fullscreen` (or `"tui": "fullscreen"` in `settings.json`, effective at the next start) the pane docks beside the transcript at `dockPercent`% of the terminal's width (default 40%, less the frame, at least 40 columns) and follows the terminal within about 2 seconds of a resize, but only while the terminal is at least 144 columns wide (narrower, it keeps its width). The terminal's width is known only from a drawing of the terminal's own pane or from running `/dashboard`, so at first the dock keeps the engine's default width and takes its share after the first drawing; a Desktop or phone attached to the session does not affect it. A width you dragged the dock to wins (an engine rule). The fullscreen layout docks from 110 columns; opening on start (when nobody asked) needs 144, and below that `/dashboard` opens it. `/dashboard` asks to bring the pane to the front and focus it (the engine grants that while the prompt has the keys and the composer is empty; `Esc` returns to the prompt).
 
 ## Use
 
@@ -56,7 +56,7 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 | `/dashboard refresh` | ask the server for Codex usage (same as `↻`), and read the branch and the other sessions' waits again now (whether or not the pane shows; Fable keeps its own schedule) |
 | `/dashboard layout auto\|compact\|wide\|mini` | override the layout for this session |
 
-With the pane focused (`ctrl+x tab`): `1`–`6` expand an agent card or lane, `f` `s` `o` open the gate's drill-down, `u` unfolds the unreviewed files, `r` asks the server for Codex usage. `/clear` resets the pane along with the conversation (Codex and branch are untouched).
+With the pane focused (`ctrl+x tab`, or `/dashboard`): `1`–`6` expand an agent card or lane, `f` `s` `o` open the gate's drill-down, `u` unfolds the unreviewed files, `r` asks the server for Codex usage. `/clear` resets the pane along with the conversation (Codex and branch are untouched).
 
 ## Codex usage
 

@@ -163,6 +163,18 @@ export const DOCK_MIN_COLUMNS = 40
 export const dockColumns = (terminalColumns: number, percent: number) =>
   Math.max(DOCK_MIN_COLUMNS, Math.round((terminalColumns * percent) / 100) - DOCK_FRAME_COLUMNS)
 
+/**
+ * The terminal width from which the engine draws an open that did not answer the person's input
+ * (a timer, session.start); narrower, such an open may leave the pane undrawn, so it is not made.
+ * The engine's own floor is 110 for an id the person already opened; 144 is kept as the conservative
+ * floor because the plugin cannot know that.
+ */
+export const DOCK_UNASKED_MIN_COLUMNS = 144
+
+/** Whether the dock's share moved since it was last asked: it differs from the width requested then. */
+export const dockShareMoved = (terminalColumns: number, percent: number, requestedColumns: number | undefined) =>
+  dockColumns(terminalColumns, percent) !== requestedColumns
+
 /** The cell the engine draws beside a docked pane's body, for the person to drag it by. */
 const DOCK_GRIP_COLUMNS = 1
 

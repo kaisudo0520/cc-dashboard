@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { claudeWindows, dockColumns, limitOf, parseConfig, terminalWidth } from '../hooks/core'
+import { claudeWindows, DOCK_UNASKED_MIN_COLUMNS, dockColumns, dockShareMoved, limitOf, parseConfig, terminalWidth } from '../hooks/core'
 
 // The side dock: in the fullscreen layout the pane sits beside the transcript, asking for a share
 // of the terminal's width (40% unless /config says otherwise), and follows the terminal as it is
@@ -13,7 +13,7 @@ const HOUR_MS = 3_600_000
 // The share of the terminal the dock asks for when /config says nothing.
 const DEFAULT_PERCENT = 40
 
-type Opened = { id: string; columns?: number; rows?: number }
+type Opened = { id: string; columns?: number; rows?: number; focus?: true }
 
 const engine = (on: On) => {
   const w = { shown: false, opens: [] as Opened[] }
@@ -23,7 +23,7 @@ const engine = (on: On) => {
     value: w.shown ? [{ id: 'dashboard', title: 'Dashboard', isShown: true, isFocused: false, isPlaced: true }] : [],
   }))
   on('ui.open', (_$, e) => {
-    w.opens.push({ id: e.id, columns: e.columns, rows: e.rows })
+    w.opens.push({ id: e.id, columns: e.columns, rows: e.rows, focus: e.focus })
     return { value: { isPlaced: true } }
   })
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -35,8 +35,8 @@ const engine = (on: On) => {
   return { w, clock }
 }
 
-const open = ($: Engine, columns: number) =>
-  $.command.run({ command: 'dashboard', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns } })
+const open = ($: Engine, columns: number, args = '') =>
+  $.command.run({ command: 'dashboard', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns } })
 
 type Seat = { placement?: 'dock' | 'inline'; isFullscreen?: boolean; surface?: 'terminal' | 'desktop'; bodyColumns?: number }
 
@@ -92,6 +92,16 @@ test("the terminal's width is the transcript's columns plus the dock's body and 
   }
 })
 
+test('the unasked floor is 144 columns', () => {
+  expect(DOCK_UNASKED_MIN_COLUMNS).toBe(144)
+})
+
+test("the dock's share counts as moved only when it differs from the width last asked for", () => {
+  expect(dockShareMoved(150, 40, 78)).toBe(true)
+  expect(dockShareMoved(200, 40, 78)).toBe(false)
+  expect(dockShareMoved(200, 40, undefined)).toBe(true)
+})
+
 test('the dock share is read leniently: 40 by default, kept between 20 and 80', () => {
   expect(parseConfig({}).dockPercent).toBe(DEFAULT_PERCENT)
   expect(parseConfig({ dockPercent: 55 }).dockPercent).toBe(55)
@@ -123,7 +133,7 @@ test('before any width is known, the pane opens at the engine share and asks for
 test('/dashboard in a 200-column fullscreen terminal asks the dock for its default share of it', async ($, on) => {
   const { w } = engine(on)
   await open($, 200)
-  expect(w.opens.at(-1)).toEqual({ id: 'dashboard', columns: 78, rows: 8 })
+  expect(w.opens.at(-1)).toEqual({ id: 'dashboard', columns: 78, rows: 8, focus: true })
 })
 
 test('the share comes from /config', { options: { dockPercent: 50 } }, async ($, on) => {
@@ -150,6 +160,78 @@ test('a docked pane follows the terminal when it is resized, and asks once per w
   await same.unmount()
   await settle(clock)
   expect(w.opens.length).toBe(before + 1)
+})
+
+test('a narrow terminal leaves the dock alone: an unasked open there may leave the pane undrawn', async ($, on) => {
+  const { w, clock } = engine(on)
+  await $.session.start({ cwd: '/work' } as never)
+  await open($, 200)
+  w.shown = true
+  const before = w.opens.length
+
+  // One column under the floor (143) asks nothing.
+  const narrow = await $.ui.mount(dock(143, { bodyColumns: 78 }))
+  await narrow.unmount()
+  await settle(clock)
+  expect(w.opens.length).toBe(before)
+
+  // At the floor (144) the share it was last asked for is stale, so it asks once.
+  const wide = await $.ui.mount(dock(144, { bodyColumns: 78 }))
+  await wide.unmount()
+  await settle(clock)
+  expect(w.opens.length).toBe(before + 1)
+  expect(w.opens.at(-1)?.columns).toBe(56)
+})
+
+test('back at the same width after a narrow spell, the dock is asked once for its share again', async ($, on) => {
+  const { w, clock } = engine(on)
+  await $.session.start({ cwd: '/work' } as never)
+  await open($, 200)
+  w.shown = true
+  const before = w.opens.length
+
+  // Narrow, nothing is asked, and the width it was last asked for is forgotten.
+  const narrow = await $.ui.mount(dock(140, { bodyColumns: 78 }))
+  await narrow.unmount()
+  await settle(clock)
+  expect(w.opens.length).toBe(before)
+
+  // Back at 200 (the same share as before), it asks once, at 78.
+  const wide = await $.ui.mount(dock(200, { bodyColumns: 78 }))
+  await wide.unmount()
+  await settle(clock)
+  expect(w.opens.length).toBe(before + 1)
+  expect(w.opens.at(-1)?.columns).toBe(78)
+
+  const same = await $.ui.mount(dock(200))
+  await same.unmount()
+  await settle(clock)
+  expect(w.opens.length).toBe(before + 1)
+})
+
+test('/dashboard raises the pane; the start-up open and the resize ask do not', async ($, on) => {
+  const { w, clock } = engine(on)
+  await $.session.start({ cwd: '/work' } as never)
+  expect(w.opens.length).toBe(1)
+  expect(w.opens.at(-1)?.focus).toBeUndefined()
+
+  await open($, 200)
+  expect(w.opens.at(-1)).toEqual({ id: 'dashboard', columns: 78, rows: 8, focus: true })
+
+  w.shown = true
+  const before = w.opens.length
+  const narrower = await $.ui.mount(dock(150, { bodyColumns: 78 }))
+  await narrower.unmount()
+  await settle(clock)
+  expect(w.opens.length).toBe(before + 1)
+  expect(w.opens.at(-1)).toEqual({ id: 'dashboard', columns: 58, rows: 8, focus: undefined })
+})
+
+test('/dashboard layout re-asks the pane without raising it', async ($, on) => {
+  const { w } = engine(on)
+  await open($, 200, 'layout wide')
+  expect(w.opens.length).toBe(1)
+  expect(w.opens.at(-1)).toEqual({ id: 'dashboard', columns: 78, rows: 8, focus: undefined })
 })
 
 test('hidden, inline, or drawn by another surface, the dock width is left alone', async ($, on) => {

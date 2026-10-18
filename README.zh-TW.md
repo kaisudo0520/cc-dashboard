@@ -35,7 +35,7 @@ Claude Code mod：在 transcript 旁（或輸入框上方）畫一個即時的�
 
 ## 側欄（全螢幕）
 
-`/tui fullscreen`（或 `settings.json` 的 `"tui": "fullscreen"`，下次啟動生效）後，面板停靠在 transcript 右側，寬度為終端的 `dockPercent`%（預設 40%，扣掉邊框，最窄 40 欄），視窗縮放後約 2 秒內跟著調整。終端寬度只在終端機的面板繪製或執行 `/dashboard` 時讀得到，所以剛啟動時先用引擎預設寬度，第一次繪製後才換成比例寬度；附掛的 Desktop／手機畫面不影響。手動拖過的寬度優先（引擎規則）。全螢幕版面 110 欄起才停靠；session 開始時自動開啟（沒人要求）則要 144 欄，窄一點時用 `/dashboard` 開。
+`/tui fullscreen`（或 `settings.json` 的 `"tui": "fullscreen"`，下次啟動生效）後，面板停靠在 transcript 右側，寬度為終端的 `dockPercent`%（預設 40%，扣掉邊框，最窄 40 欄），視窗縮放後約 2 秒內跟著調整，但只在終端至少 144 欄寬時；比這窄就維持原寬度。終端寬度只在終端機的面板繪製或執行 `/dashboard` 時讀得到，所以剛啟動時先用引擎預設寬度，第一次繪製後才換成比例寬度；附掛的 Desktop／手機畫面不影響。手動拖過的寬度優先（引擎規則）。全螢幕版面 110 欄起才停靠；session 開始時自動開啟（沒人要求）則要 144 欄，窄一點時用 `/dashboard` 開。`/dashboard` 會要求把面板帶到最前面並聚焦（引擎只在輸入框取得按鍵且輸入內容為空時才會答應；`Esc` 回到輸入框）。
 
 ## 使用
 
@@ -51,7 +51,7 @@ claude --plugin-dir N:\projects\github\cc-dashboard
 | `/dashboard refresh` | 向伺服器查詢 Codex 額度（同按 `↻`），並立刻重讀分支與其他 session 的等待（不論面板是否顯示；Fable 照自己的排程） |
 | `/dashboard layout auto\|compact\|wide\|mini` | 本 session 的版面 |
 
-用 `ctrl+x tab` 聚焦面板後：`1`–`6` 展開子代理，`f` `s` `o` 展開權限明細，`u` 展開未審檔案清單，`r` 向伺服器查詢 Codex 額度。`/clear` 會連同對話重設面板（Codex 與分支不受影響）。
+用 `ctrl+x tab`（或 `/dashboard`）聚焦面板後：`1`–`6` 展開子代理，`f` `s` `o` 展開權限明細，`u` 展開未審檔案清單，`r` 向伺服器查詢 Codex 額度。`/clear` 會連同對話重設面板（Codex 與分支不受影響）。
 
 ## Codex 額度
 
